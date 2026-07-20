@@ -27,6 +27,7 @@ from simagentplg.agent.context_management import (
     MessageTokenEstimator,
     estimate_context_usage,
 )
+from simagentplg.agent.control import _SteeringQueue
 from simagentplg.agent.events import (
     AgentEventEmitter,
     AgentFinished,
@@ -35,6 +36,8 @@ from simagentplg.agent.events import (
     AssistantThinkingDelta,
     ContextPressureEvaluated,
     MessageCompleted,
+    SteeringApplied,
+    SteeringDiscarded,
     TurnCompleted,
     TurnStarted,
 )
@@ -126,6 +129,7 @@ class AgentOrchestrator:
         *,
         task: str,
         cancellation: CancellationToken | None = None,
+        steering: _SteeringQueue | None = None,
     ) -> AgentRunResult:
         """Run one task and return its structured terminal result."""
 
@@ -138,7 +142,7 @@ class AgentOrchestrator:
                 self.state.begin_task(task)
                 await self.event_emitter.emit(AgentStarted(task))
                 await token.run(self._prepare_task())
-                result = await self._run_loop(token)
+                result = await self._run_loop(token, steering)
             except AgentCancelledError as exc:
                 result = self._cancelled(str(exc))
             except RepeatedToolCallError as exc:
@@ -155,6 +159,11 @@ class AgentOrchestrator:
                 result = self._cancelled("agent run coroutine was cancelled")
             except Exception as exc:
                 result = self._failure(StopReason.RUNTIME_ERROR, str(exc))
+            if steering is not None:
+                for control in steering.close():
+                    await self.event_emitter.emit(
+                        SteeringDiscarded(control, result.stop_reason)
+                    )
             self._commit_result(result)
             await self.event_emitter.emit(AgentFinished(result))
             if caller_cancellation is not None:
@@ -170,6 +179,7 @@ class AgentOrchestrator:
     async def _run_loop(
         self,
         cancellation: CancellationToken,
+        steering: _SteeringQueue | None = None,
     ) -> AgentRunResult:
         for _ in range(self.policy.max_steps):
             cancellation.raise_if_cancelled()
@@ -179,7 +189,7 @@ class AgentOrchestrator:
             turn = self.state.advance_turn()
             await self.event_emitter.emit(TurnStarted(turn))
             try:
-                response = await self._chat_next_turn(cancellation)
+                response = await self._chat_next_turn(cancellation, steering)
                 message = response.message
                 self._usage.record(response.usage)
                 self.state.add_message(
@@ -194,6 +204,9 @@ class AgentOrchestrator:
                 cancellation.raise_if_cancelled()
 
                 if not message.tool_calls:
+                    if steering is not None and steering.has_pending:
+                        self.state.no_tool_response_count = 0
+                        continue
                     if not self.policy.require_explicit_finish:
                         if message.content:
                             return AgentRunResult(
@@ -249,8 +262,9 @@ class AgentOrchestrator:
     async def _chat_next_turn(
         self,
         cancellation: CancellationToken,
+        steering: _SteeringQueue | None = None,
     ) -> ModelResponseCompleted:
-        context, preparation = await self._build_evaluated_context()
+        context, preparation = await self._build_evaluated_context(steering)
         auto_policy = self.auto_compaction_policy
         if (
             auto_policy is not None
@@ -264,7 +278,7 @@ class AgentOrchestrator:
                 preparation=preparation,
             )
             if result:
-                context, _ = await self._build_evaluated_context()
+                context, _ = await self._build_evaluated_context(steering)
 
         overflow_retries = 0
         while True:
@@ -286,18 +300,36 @@ class AgentOrchestrator:
                 if not compacted:
                     raise
                 overflow_retries += 1
-                context, _ = await self._build_evaluated_context()
+                context, _ = await self._build_evaluated_context(steering)
 
     async def _build_evaluated_context(
         self,
+        steering: _SteeringQueue | None = None,
     ) -> tuple[ContextBuildResult, CompactionPreparation | None]:
-        context = self.context_builder.build(
-            self.state,
-            tools=self.tools,
-            transient_messages=self._runtime_context_messages(),
-        )
-        preparation = await self._evaluate_context_pressure(context)
-        return context, preparation
+        while True:
+            await self._apply_steering(steering)
+            context = self.context_builder.build(
+                self.state,
+                tools=self.tools,
+                transient_messages=self._runtime_context_messages(),
+            )
+            preparation = await self._evaluate_context_pressure(context)
+            if steering is None or not steering.has_pending:
+                return context, preparation
+
+    async def _apply_steering(self, steering: _SteeringQueue | None) -> None:
+        if steering is None:
+            return
+        controls = steering.drain()
+        if not controls:
+            return
+        self.state.no_tool_response_count = 0
+        for control in controls:
+            self.state.add_message({"role": "user", "content": control.content})
+            await self.event_emitter.emit(
+                SteeringApplied(control=control, target_turn=self.state.turn)
+            )
+        self._activate_explicit_skill()
 
     async def _request_model(
         self,

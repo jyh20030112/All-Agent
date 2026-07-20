@@ -147,6 +147,33 @@ Model adapters, tool middleware, and tool handlers receive the run's
 `CancellationToken`; long-running handlers should also use `try/finally` to
 release resources such as subprocesses.
 
+### Steering an active run
+
+`steer()` queues guidance for the active Run without interrupting an in-flight
+model response or Tool call:
+
+```python
+receipt = await agent.steer(
+    "Do not modify the database; produce a migration plan instead."
+)
+if not receipt.accepted:
+    print(receipt.status)
+```
+
+Each Run owns a bounded FIFO queue; configure it with
+`BaseAgent(..., steering_queue_capacity=16)`. Submission returns a typed
+`ControlReceipt` with `ACCEPTED`, `AGENT_IDLE`, `QUEUE_FULL`, or `RUN_CLOSING`
+instead of silently dropping input. Accepted guidance is consumed immediately
+before the next Provider context is finalized, including a model retry after
+Context Overflow recovery. A Tool that has already started always settles
+before Steering reaches the model.
+
+Applied guidance becomes a normal User message in Agent history and emits
+`SteeringApplied`; `SessionRecorder` stores it as `steering_applied`. If the Run
+ends or is cancelled before another model-call safe point, the pending input is
+not persisted and emits `SteeringDiscarded`. An accepted receipt therefore
+means “queued”, while these events expose the final applied/discarded outcome.
+
 ### Streaming responses
 
 `BaseAgent.run()` still returns one final `AgentRunResult`, while provisional
@@ -692,7 +719,8 @@ The package root exports:
 - Providers: `ModelAdapter`, `OpenAIModelAdapter`, `ModelConfig`, `AssistantMessage`, `ModelToolCall`, `ModelUsage`, `ModelStreamEvent`, `ModelTextDelta`, `ModelThinkingDelta`, `ModelResponseCompleted`, `ModelErrorKind`, `ModelProviderError`, `ContextOverflowError`, `ModelRateLimitError`, `ModelTimeoutError`, `ModelAuthenticationError`
 - Runtime: `RuntimePolicy`, `AgentRunResult`, `RunUsage`, `AgentRunError`, `RunStatus`, `StopReason`
 - Cancellation: `CancellationToken`, `CancellationSource`, `AgentCancelledError`
-- Events: `AgentEvent`, `AgentEventSink`, `CompositeAgentEventSink`, `AssistantTextDelta`, `AssistantThinkingDelta`, `ToolProgressed`, `ContextPressureEvaluated`, `CompactionStarted`, `CompactionCompleted`, `CompactionFailed`
+- Events: `AgentEvent`, `AgentEventSink`, `CompositeAgentEventSink`, `AssistantTextDelta`, `AssistantThinkingDelta`, `ToolProgressed`, `SteeringApplied`, `SteeringDiscarded`, `ContextPressureEvaluated`, `CompactionStarted`, `CompactionCompleted`, `CompactionFailed`
+- Control: `ControlInputKind`, `ControlStatus`, `ControlInput`, `ControlReceipt`
 - Session: `AgentSession`, `SessionRecorder`, `SessionStorage`, `SessionJournalStorage`, `SessionTreeStorage`, `MemorySessionStorage`, `JsonlSessionStorage`, `SessionCompaction`, `SessionRecord`, `SessionRecordDraft`, `SessionRecordKind`, `SessionBranchIntent`, `SessionBranch`, `SessionCheckout`, `SessionRetry`, `DEFAULT_SESSION_BRANCH`, `SESSION_SCHEMA_VERSION`, `SESSION_JOURNAL_SCHEMA_VERSION`, `session_to_dict`, `session_from_dict`, `SessionError`, `SessionSerializationError`, `SessionStorageError`, `SessionConflictError`, `SessionLockTimeoutError`
 - Context: `AgentContextBuilder`, `ContextBuildResult`, `ContextBudget`, `ContextUsageEstimate`, `CompactionPolicy`, `AutoCompactionPolicy`, `CompactionDecision`, `CompactionPreparation`, `MessageTokenEstimator`, `estimate_context_usage`, `prepare_compaction`
 - Compaction: `CompactionRuntime`, `Compactor`, `ModelCompactor`, `CompactionContextBuilder`, `CompactorOutput`, `CompactionRequest`, `CompactionResult`, `CompactionStatus`, `CompactionTrigger`, `SummaryEntry`

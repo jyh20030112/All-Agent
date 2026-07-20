@@ -23,6 +23,7 @@ SimAgentPlg 已经不只是 Agent Loop。当前实现覆盖了通用 Agent Core 
 - Durable JSONL Session Journal
 - Session Tree、Branch Head、Checkout、Fork、Rollback 和整 Run Retry
 - 跨实例 / 跨进程 Session Journal 原子写入与 `SessionTreeStorage` 协议
+- 有界 FIFO Steering Queue、Model-call Safe Point 与 Session 审计
 - Python 3.12 / 3.13 CI、构建 smoke test 与 PyPI Trusted Publishing CD
 
 因此，`BaseAgent` 已经是一个可独立使用的轻量 Harness 组装根，而不再只是
@@ -30,21 +31,22 @@ SimAgentPlg 已经不只是 Agent Loop。当前实现覆盖了通用 Agent Core 
 
 与 Pi 的主要差距已经从“缺少持久化和自动压缩”转移到以下领域：
 
-1. **行为控制面**：没有 Steering、Follow-up、Continue 和通用行为型 Hook。
+1. **行为控制面**：Steering 基础版已完成；尚无 Follow-up、Continue 和通用行为控制策略。
 2. **工具调度**：Tool Call 仍顺序执行，工具集合主要在构造或启动时确定。
 3. **Provider 广度**：只有 OpenAI-compatible Adapter，Canonical Tool Schema 仍偏 OpenAI。
 4. **长 Journal 性能**：写入与读取仍会线性重建索引，需要按实际规模决定索引和归档策略。
 5. **ExecutionEnv / CodeAgent**：文件、Shell、Git、Workspace、Sandbox、Approval 和 UI/RPC
    明确留给派生层，当前仓库尚未实现该层。
 
-Session Journal 的并发正确性边界已经补齐。下一阶段应进入 **Harness 行为控制面**，先定义
-Steering、Follow-up 和 Continue 的安全点与队列语义，再考虑并行 Tool 和后台执行。
+Session Journal 的并发正确性边界和 Steering Safe Point 已补齐。行为控制面的下一批应实现
+Follow-up，再复用相同队列回执和终态屏障设计 Continue。
 
 ## 2. 当前架构
 
 ```text
 BaseAgent
   ├── Active Operation / CancellationSource
+  ├── Bounded Steering Queue / Control Receipt
   ├── ModelAdapter
   │     └── OpenAIModelAdapter
   ├── AgentOrchestrator
@@ -73,7 +75,7 @@ BaseAgent
 
 | 组件 | 当前职责 |
 |---|---|
-| `BaseAgent` | 依赖组装、操作串行化、取消、空闲等待、资源生命周期、Session Restore |
+| `BaseAgent` | 依赖组装、操作串行化、Steering、取消、空闲等待、资源生命周期、Session Restore |
 | `AgentOrchestrator` | 模型—工具循环、自动压缩、Overflow Recovery、结构化终止 |
 | `AgentState` | 当前消息、Turn、任务状态和运行结果 |
 | `AgentContextBuilder` | 构造 Agent 投影和 Provider-safe 请求，注入 Skill 与临时控制消息 |
@@ -96,6 +98,7 @@ BaseAgent.run(task)
   → create CancellationToken + run_id
   → AgentState.begin_task(task)
   → AgentStarted
+  → drain Steering at model-call safe point
   → AgentContextBuilder.build()
   → ContextPressureEvaluated
   → optional pressure-triggered Compaction
@@ -152,6 +155,7 @@ Usage 和 Provider Error 归一化。只实现 `complete()` 的 Adapter 仍可�
 ```text
 AgentStarted
 TurnStarted
+SteeringApplied / SteeringDiscarded
 ContextPressureEvaluated
 AssistantThinkingDelta*
 AssistantTextDelta*
@@ -170,7 +174,20 @@ AgentFinished
 MCP。`abort()` 不等待操作锁，`wait_for_idle()` 覆盖终态 Sink 收尾；取消后同一 Agent
 可以复用。
 
-### 3.4 Usage、Context 与 Compaction
+### 3.4 Steering 控制面
+
+`BaseAgent.steer(content)` 为当前 Run 提交有界 FIFO 控制输入，并返回带稳定 `input_id` 的
+`ControlReceipt`。即时状态明确区分 `accepted`、`agent_idle`、`queue_full` 和
+`run_closing`，不会静默丢弃输入。
+
+Steering 不会中断正在执行的 Model Response 或 Tool。Core 在下一次 Provider Context 最终
+确定前消费队列；该安全点也覆盖 Context Pressure Compaction 和 Overflow Retry。已经开始的
+Tool Call 必须先产生对应 Tool Result，Steering 才会作为新的 User Message 进入上下文。
+
+成功应用会发出 `SteeringApplied` 并写入 `steering_applied` Session Record。Run 在下一个
+Model Call 前结束时，未消费输入发出 `SteeringDiscarded`，但不伪装成 Durable History。
+
+### 3.5 Usage、Context 与 Compaction
 
 当前上下文管理链路已经完整接通：
 
@@ -197,7 +214,7 @@ ModelUsage
 - Compactor 失败安全终止，不安装部分 Summary。
 - Compaction 通过 Session Record 持久化，原始审计 Entry 不删除。
 
-### 3.5 Durable JSONL Session Tree
+### 3.6 Durable JSONL Session Tree
 
 `SessionRecorder` 对 Journal Storage 追加语义 Record：
 
@@ -205,6 +222,7 @@ ModelUsage
 run_started
 message_appended
 messages_appended
+steering_applied
 compaction_applied
 run_finished
 branch_created
@@ -242,7 +260,7 @@ JSONL 的当前耐久性保证：
 
 尚未保证的是多个进程对同一 Session 的 read-validate-append 原子性。
 
-### 3.6 交付与兼容性
+### 3.7 交付与兼容性
 
 - Python 3.12 和 3.13 质量矩阵
 - Ruff、Mypy、Unit Test、sdist/wheel 和安装后 Public API smoke test
@@ -264,7 +282,7 @@ CD 属于交付能力，不改变 Core Runtime 语义。
 | Event Barrier | `Agent` Subscriber | 顺序 await `AgentEventSink` | 已具备 |
 | Tool Middleware / Hook | `beforeToolCall`、`afterToolCall` | `ToolMiddleware` | 部分具备 |
 | Stop-after-turn Hook | `shouldStopAfterTurn` | 无通用接口 | 未实现 |
-| Steering | Queue + safe turn boundary | 无 | 未实现 |
+| Steering | Queue + safe turn boundary | 有界 FIFO + Model-call Safe Point | 基础已具备 |
 | Follow-up | Agent outer loop queue | 无 | 未实现 |
 | Continue | `continue()` | 只能通过新 Run / Retry Branch | 语义未对齐 |
 | Parallel Tool Calls | 默认并行，可强制顺序 | 顺序执行 | 未实现 |
@@ -420,10 +438,10 @@ Adapter 的真实差异验证，例如 Thinking、Cache Usage、Tool Schema 和�
 - 锁超时、取消和异常退出恢复
 - 长 Journal 基准；Sidecar Index 延后到真实规模需要时
 
-### 阶段五：Harness 行为控制面——下一阶段
+### 阶段五：Harness 行为控制面——进行中
 
-- Steering Queue
-- Follow-up Queue
+- Steering Queue、Safe Point、回执和 Session 审计——已完成基础版
+- Follow-up Queue——下一批
 - Continue / Resume-safe-point 语义
 - 独立于只读 Event 的行为型 Hook
 - Queue 与 Session Journal 的持久化边界
@@ -450,34 +468,26 @@ CodeAgent
 
 ## 8. 下一步任务建议
 
-下一步建议实现 **Harness 行为控制面**。重点不是简单增加三个 Queue API，而是先定义输入在
-Agent Run 的哪个安全点生效，避免 Steering 与 Tool 副作用、Compaction 或 Session Record
-顺序相互冲突。
+Steering 第一批已经完成。下一步建议实现 **Follow-up Queue**，复用 `ControlInput`、
+`ControlReceipt`、有界 FIFO 和明确的 Queue 状态，但不与当前 Run 的 Steering 混用。
 
 ### 8.1 具体实现范围
 
-1. 定义三个不同意图：
-   - **Steering**：当前 Run 下一次 Model 请求前注入控制消息。
-   - **Follow-up**：当前 Run 正常结束后，以新 Run 执行排队任务。
-   - **Continue**：在没有活动 Run 时，基于当前 Session Head 显式继续，而不是隐式重放 Tool。
-2. 在 `BaseAgent` 建立有界、可观察、可取消的输入队列，并明确同一时刻只有一个 Active Run。
-3. 在 Orchestrator 的安全点消费 Steering：完成当前 Model Response 和已开始的 Tool 批次后，
-   在下一次 Model Call 前注入；不打断正在执行的副作用 Tool。
-4. 让 Follow-up 在 `AgentFinished` 和 Session 终态 Record 落盘后启动，保持终态事件屏障。
-5. 为行为控制定义独立于只读 `AgentEventSink` 的 Hook / Controller 边界；Event 观察者不能通过
-   返回值偷偷修改 Core 行为。
-6. 明确 Queue 的持久化策略：第一版仅保证进程内队列，只有真正被接受的 Steering 和开始执行
-   的 Follow-up 才进入 Session Journal；不把尚未执行的内存队列伪装成 Durable Job Queue。
+1. 扩展 `ControlInputKind.FOLLOW_UP`，但为 Follow-up 使用独立有界 FIFO。
+2. 明确提交回执和最终结果的关系：即时 Receipt 只表示入队，调用方还需要可等待的 Run Handle。
+3. 当前 Run 必须完成 `AgentFinished` 及所有 Event Sink 后，才能启动下一个 Follow-up Run。
+4. 每个 Follow-up 创建独立 `run_id`、事件序列和 `AgentRunResult`，不并入前一个 Run。
+5. 当前 Run 被取消或失败时，默认不自动执行后续任务；由显式 Policy 决定 discard 或 continue。
+6. 第一版仍保持进程内队列。只有 Follow-up 真正开始执行时才写 `run_started`，不把 Pending Queue
+   伪装成 Durable Job Queue。
 
 ### 8.2 验收标准
 
-- Steering 只在定义好的 Model Call 边界生效，不丢失、不重复，也不插入 Tool Call / Result
-  配对之间。
 - Follow-up 必须等待前一个 Run 的 `AgentFinished` 与 Session `run_finished` 完成。
-- Continue 不自动重放未确认的 Tool 副作用。
-- Queue 满、Agent Closing、取消和并发提交都有明确结果，不静默丢弃输入。
-- 现有 `run()`、事件顺序、Cancellation、Compaction 和 SessionRecorder 行为保持兼容。
-- 多个 Steering / Follow-up 的 FIFO 顺序由确定性测试覆盖。
+- 多个 Follow-up 以 FIFO 顺序获得独立结果，不与 Steering 相互抢占。
+- Queue 满、Run 取消、Agent Shutdown 和调用方取消等待都有明确结果。
+- `wait_for_idle()` 必须覆盖所有已接受的 Follow-up 及其终态 Sink。
+- 现有直接 `run()` 的返回语义和操作串行化保持兼容。
 
-完成行为控制面后，再进入 Parallel Tool Calls。届时可以复用同一安全点模型来区分可并行的
-只读 Tool 与必须串行的副作用 Tool。
+Follow-up 完成后再实现 Continue；之后根据真实需求抽取 `BehaviorController`，不复制已有的
+Tool Middleware 能力。

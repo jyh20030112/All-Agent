@@ -451,6 +451,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
 
         async def run_loop(
             cancellation: CancellationToken,
+            steering: object | None = None,
         ) -> AgentRunResult:
             nonlocal active, maximum
             active += 1

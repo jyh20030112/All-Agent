@@ -27,6 +27,7 @@ from simagentplg import (
     ModelTextDelta,
     RunStatus,
     SessionRecorder,
+    SteeringApplied,
     StopReason,
 )
 
@@ -116,6 +117,22 @@ class BlockingCompactor:
         self.started.set()
         await asyncio.Event().wait()
         return CompactorOutput("unreachable", "test-compactor")
+
+
+class ReleasableCompactor:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def compact(
+        self,
+        request: CompactionRequest,
+        *,
+        cancellation: CancellationToken | None = None,
+    ) -> CompactorOutput:
+        self.started.set()
+        await self.release.wait()
+        return CompactorOutput("summary before steering", "test-compactor")
 
 
 def compaction_policy() -> CompactionPolicy:
@@ -289,6 +306,47 @@ class AutoCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("old task", repr(model.contexts[0].agent_messages))
         self.assertNotIn("old task", repr(model.contexts[1].agent_messages))
         self.assertEqual(result.usage.request_count, 2)
+
+    async def test_steering_during_overflow_compaction_reaches_retry(self) -> None:
+        model = ScriptedStreamModel(
+            [ContextOverflowError("too large"), completed("steered retry")]
+        )
+        compactor = ReleasableCompactor()
+        sink = RecordingSink()
+        agent = BaseAgent(
+            model,
+            agent_id="overflow-steering",
+            compaction_policy=compaction_policy(),
+            compactor=compactor,
+            auto_compaction_policy=AutoCompactionPolicy(compact_on_pressure=False),
+            context_token_estimator=MarkerTokenEstimator(),
+            event_sink=sink,
+        )
+        agent.reset(history=history())
+        run = asyncio.create_task(agent.run(task="continue"))
+        await compactor.started.wait()
+
+        receipt = await agent.steer("use the corrected direction")
+        compactor.release.set()
+        result = await run
+
+        self.assertTrue(receipt.accepted)
+        self.assertEqual(result.output, "steered retry")
+        self.assertNotIn(
+            "use the corrected direction",
+            repr(model.contexts[0].agent_messages),
+        )
+        self.assertIn(
+            "use the corrected direction",
+            repr(model.contexts[1].agent_messages),
+        )
+        applied = [
+            event.payload
+            for event in sink.events
+            if isinstance(event.payload, SteeringApplied)
+        ]
+        self.assertEqual(len(applied), 1)
+        self.assertEqual(applied[0].target_turn, 1)
 
     async def test_second_context_overflow_is_structured_failure(self) -> None:
         model = ScriptedStreamModel(

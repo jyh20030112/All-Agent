@@ -6,6 +6,7 @@ from simagentplg.agent.events import (
     AgentStarted,
     CompactionCompleted,
     MessageCompleted,
+    SteeringApplied,
     ToolCompleted,
 )
 from simagentplg.providers.base import serialize_assistant_message
@@ -16,6 +17,7 @@ from simagentplg.session.types import AgentSession
 _RECORDED_PAYLOADS = (
     AgentStarted,
     MessageCompleted,
+    SteeringApplied,
     ToolCompleted,
     AgentFinished,
     CompactionCompleted,
@@ -81,6 +83,22 @@ class SessionRecorder:
                     sequence=event.sequence,
                     run_id=event.run_id,
                     task=payload.task,
+                    branch_id=self.branch_id,
+                )
+            elif isinstance(payload, SteeringApplied):
+                session.append_message(
+                    event.run_id,
+                    event.sequence,
+                    {"role": "user", "content": payload.control.content},
+                )
+                draft = SessionRecordDraft.steering_applied(
+                    session_id=self.session_id,
+                    agent_id=event.agent_id,
+                    sequence=event.sequence,
+                    run_id=event.run_id,
+                    input_id=payload.control.input_id,
+                    content=payload.control.content,
+                    target_turn=payload.target_turn,
                     branch_id=self.branch_id,
                 )
             elif isinstance(payload, CompactionCompleted):

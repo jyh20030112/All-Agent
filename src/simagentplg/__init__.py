@@ -31,6 +31,12 @@ from simagentplg.agent.context_management import (
     estimate_context_usage,
     prepare_compaction,
 )
+from simagentplg.agent.control import (
+    ControlInput,
+    ControlInputKind,
+    ControlReceipt,
+    ControlStatus,
+)
 from simagentplg.agent.events import (
     AgentEvent,
     AgentEventKind,
@@ -47,6 +53,8 @@ from simagentplg.agent.events import (
     CompositeAgentEventSink,
     ContextPressureEvaluated,
     MessageCompleted,
+    SteeringApplied,
+    SteeringDiscarded,
     ToolCompleted,
     ToolProgressed,
     ToolStarted,
@@ -151,6 +159,10 @@ __all__ = [
     "CompactionRuntime",
     "CompactionStatus",
     "CompactionTrigger",
+    "ControlInputKind",
+    "ControlStatus",
+    "ControlInput",
+    "ControlReceipt",
     "SummaryEntry",
     "CompactionContextBuilder",
     "ModelCompactor",
@@ -201,6 +213,8 @@ __all__ = [
     "AssistantTextDelta",
     "TurnStarted",
     "MessageCompleted",
+    "SteeringApplied",
+    "SteeringDiscarded",
     "ToolStarted",
     "ToolProgressed",
     "ToolCompleted",

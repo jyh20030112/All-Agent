@@ -30,6 +30,7 @@ class SessionRecordKind(StrEnum):
     RUN_STARTED = "run_started"
     MESSAGE_APPENDED = "message_appended"
     MESSAGES_APPENDED = "messages_appended"
+    STEERING_APPLIED = "steering_applied"
     COMPACTION_APPLIED = "compaction_applied"
     RUN_FINISHED = "run_finished"
 
@@ -151,6 +152,35 @@ class SessionRecordDraft:
             sequence=sequence,
             kind=SessionRecordKind.MESSAGES_APPENDED,
             data={"run_id": run_id, "messages": deepcopy(list(messages))},
+            branch_id=branch_id,
+        )
+
+    @classmethod
+    def steering_applied(
+        cls,
+        *,
+        session_id: str,
+        agent_id: str,
+        sequence: int,
+        run_id: str,
+        input_id: str,
+        content: str,
+        target_turn: int,
+        branch_id: str = DEFAULT_SESSION_BRANCH,
+    ) -> SessionRecordDraft:
+        if target_turn <= 0:
+            raise ValueError("target_turn must be greater than zero")
+        return cls(
+            session_id=session_id,
+            agent_id=agent_id,
+            sequence=sequence,
+            kind=SessionRecordKind.STEERING_APPLIED,
+            data={
+                "run_id": run_id,
+                "input_id": input_id,
+                "content": content,
+                "target_turn": target_turn,
+            },
             branch_id=branch_id,
         )
 
@@ -351,6 +381,21 @@ def apply_session_record(
                 record.sequence,
                 deepcopy(dict(message)),
             )
+    elif record.kind is SessionRecordKind.STEERING_APPLIED:
+        _data_string(record, "input_id")
+        target_turn = _integer(record.data.get("target_turn"), "target_turn")
+        if target_turn <= 0:
+            raise SessionSerializationError(
+                "steering_applied data.target_turn must be greater than zero"
+            )
+        active.append_message(
+            _data_string(record, "run_id"),
+            record.sequence,
+            {
+                "role": "user",
+                "content": _data_string(record, "content"),
+            },
+        )
     elif record.kind is SessionRecordKind.COMPACTION_APPLIED:
         summary = record.data.get("summary")
         messages = record.data.get("messages")

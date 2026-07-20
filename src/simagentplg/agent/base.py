@@ -20,6 +20,12 @@ from simagentplg.agent.context_management import (
     CompactionPolicy,
     MessageTokenEstimator,
 )
+from simagentplg.agent.control import (
+    ControlInput,
+    ControlReceipt,
+    ControlStatus,
+    _SteeringQueue,
+)
 from simagentplg.agent.events import (
     AgentEventEmitter,
     AgentEventSink,
@@ -60,6 +66,7 @@ that returns the completion control signal.
 @dataclass(slots=True)
 class _ActiveOperation:
     cancellation: CancellationSource
+    steering: _SteeringQueue | None = None
 
 
 class BaseAgent:
@@ -81,10 +88,17 @@ class BaseAgent:
         context_token_estimator: MessageTokenEstimator | None = None,
         runtime_policy: RuntimePolicy | None = None,
         event_sink: AgentEventSink | None = None,
+        steering_queue_capacity: int = 16,
     ) -> None:
         self._agent_id = agent_id.strip()
         if not self._agent_id:
             raise ValueError("agent_id must not be empty")
+        if isinstance(steering_queue_capacity, bool) or not isinstance(
+            steering_queue_capacity, int
+        ):
+            raise TypeError("steering_queue_capacity must be an integer")
+        if steering_queue_capacity <= 0:
+            raise ValueError("steering_queue_capacity must be greater than zero")
         policy = runtime_policy or RuntimePolicy()
         self.model = model
         self.system_prompt = system_prompt
@@ -101,6 +115,7 @@ class BaseAgent:
         self.handlers = list(handlers or ())
         self.middlewares = list(middlewares or ())
         self.event_sink = event_sink
+        self.steering_queue_capacity = steering_queue_capacity
         self._operation_lock = asyncio.Lock()
         self._active_operation: _ActiveOperation | None = None
         self._pending_operations = 0
@@ -166,6 +181,15 @@ class BaseAgent:
         """Return the agent's persistent conversation history."""
 
         return self.state.messages
+
+    @property
+    def pending_steering_count(self) -> int:
+        """Return queued Steering inputs for the active Run."""
+
+        active_operation = self._active_operation
+        if active_operation is None or active_operation.steering is None:
+            return 0
+        return active_operation.steering.size
 
     def reset(
         self,
@@ -295,15 +319,18 @@ class BaseAgent:
         try:
             async with self._operation_lock:
                 source = CancellationSource()
-                active_operation = _ActiveOperation(source)
+                steering = _SteeringQueue(self.steering_queue_capacity)
+                active_operation = _ActiveOperation(source, steering)
                 self._active_operation = active_operation
                 try:
                     await self._startup()
                     return await self.orchestrator.run(
                         task=task,
                         cancellation=source.token,
+                        steering=steering,
                     )
                 finally:
+                    steering.close()
                     if self._active_operation is active_operation:
                         self._active_operation = None
         finally:
@@ -351,6 +378,25 @@ class BaseAgent:
         if active_operation is None:
             return False
         return active_operation.cancellation.cancel(reason)
+
+    async def steer(self, content: str) -> ControlReceipt:
+        """Queue guidance for the active Run's next model-call safe point."""
+
+        control = ControlInput.steering(content)
+        active_operation = self._active_operation
+        if active_operation is None or active_operation.steering is None:
+            return ControlReceipt(
+                control=control,
+                status=ControlStatus.AGENT_IDLE,
+                queue_size=0,
+            )
+        if active_operation.cancellation.token.cancelled:
+            return ControlReceipt(
+                control=control,
+                status=ControlStatus.RUN_CLOSING,
+                queue_size=active_operation.steering.size,
+            )
+        return active_operation.steering.submit(control)
 
     async def wait_for_idle(self) -> None:
         """Wait for requested runs or compactions and their sinks to settle."""
