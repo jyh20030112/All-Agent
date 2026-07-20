@@ -21,11 +21,13 @@ from simagentplg import (
     RunUsage,
     SessionBranchIntent,
     SessionConflictError,
+    SessionLockTimeoutError,
     SessionRecordDraft,
     SessionRecorder,
     SessionRecordKind,
     SessionSerializationError,
     SessionStorageError,
+    SessionTreeStorage,
     StopReason,
     SummaryEntry,
     session_from_dict,
@@ -138,6 +140,10 @@ def json_files(directory: str) -> list[Path]:
     return list(Path(directory).glob("*.jsonl"))
 
 
+def jsonl_lock_files(directory: str) -> list[Path]:
+    return list(Path(directory).glob("*.jsonl.lock"))
+
+
 def write_text(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
@@ -159,6 +165,92 @@ def write_json_lines(path: Path, records: list[dict[str, Any]]) -> None:
     path.write_text(
         "".join(json.dumps(record) + "\n" for record in records),
         encoding="utf-8",
+    )
+
+
+def start_append_process(
+    directory: str,
+    session_id: str,
+    expected_head_id: str,
+    run_id: str,
+    branch_id: str,
+    start_path: Path,
+) -> subprocess.Popen[str]:
+    script = """
+import asyncio
+import json
+import sys
+import time
+from pathlib import Path
+from simagentplg import (
+    JsonlSessionStorage,
+    SessionConflictError,
+    SessionRecordDraft,
+)
+
+async def main():
+    root, session_id, expected_head, run_id, branch_id, start_path = sys.argv[1:]
+    while not Path(start_path).exists():
+        time.sleep(0.005)
+    storage = JsonlSessionStorage(root)
+    draft = SessionRecordDraft.run_started(
+        session_id=session_id,
+        agent_id="durable-agent",
+        sequence=1,
+        run_id=run_id,
+        task=run_id,
+        branch_id=branch_id,
+    )
+    try:
+        record = await storage.append(
+            draft,
+            expected_head_id=expected_head,
+            check_head=True,
+        )
+    except SessionConflictError:
+        result = {"status": "conflict"}
+    else:
+        result = {
+            "status": "success",
+            "record_id": record.record_id,
+            "parent_id": record.parent_id,
+            "revision": record.revision,
+        }
+    print(json.dumps(result))
+
+asyncio.run(main())
+"""
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            script,
+            directory,
+            session_id,
+            expected_head_id,
+            run_id,
+            branch_id,
+            str(start_path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+async def collect_process(process: subprocess.Popen[str]) -> dict[str, Any]:
+    stdout, stderr = await asyncio.to_thread(process.communicate, timeout=10)
+    if process.returncode != 0:
+        raise AssertionError(f"subprocess failed: {stderr}")
+    return json.loads(stdout)
+
+
+def start_python_process(script: str, *args: str) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        [sys.executable, "-c", script, *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
 
 
@@ -351,6 +443,213 @@ asyncio.run(main())
             self.assertEqual(loaded["agent_id"], "durable-agent")
             self.assertEqual(loaded["roles"], ["system", "assistant"])
             self.assertEqual(loaded["runs"], 1)
+
+    async def test_storage_implements_backend_neutral_tree_protocol(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = JsonlSessionStorage(directory)
+
+            self.assertIsInstance(storage, SessionTreeStorage)
+
+    async def test_missing_read_does_not_create_storage_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "sessions"
+            storage = JsonlSessionStorage(root)
+
+            self.assertIsNone(await storage.load("missing"))
+            self.assertFalse(root.exists())
+
+    async def test_competing_processes_conditionally_append_only_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = JsonlSessionStorage(directory)
+            await storage.save(durable_session("process-race"))
+            head = await storage.head("process-race")
+            assert head is not None
+            start_path = Path(directory) / "start"
+            processes = [
+                start_append_process(
+                    directory,
+                    "process-race",
+                    head.record_id,
+                    f"competing-run-{index}",
+                    "main",
+                    start_path,
+                )
+                for index in range(2)
+            ]
+            await asyncio.to_thread(write_text, start_path, "go")
+
+            results = await asyncio.gather(
+                *(collect_process(process) for process in processes)
+            )
+
+            self.assertEqual(
+                sorted(result["status"] for result in results),
+                ["conflict", "success"],
+            )
+            records = await storage.records("process-race")
+            self.assertEqual([record.revision for record in records], [1, 2])
+            self.assertEqual(records[1].parent_id, head.record_id)
+
+    async def test_processes_append_different_branches_with_correct_parents(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = JsonlSessionStorage(directory)
+            await storage.save(durable_session("branch-race"))
+            main_head = await storage.head("branch-race")
+            assert main_head is not None
+            branch = await storage.fork(
+                "branch-race",
+                branch_id="experiment",
+            )
+            start_path = Path(directory) / "start"
+            processes = [
+                start_append_process(
+                    directory,
+                    "branch-race",
+                    main_head.record_id,
+                    "main-run",
+                    "main",
+                    start_path,
+                ),
+                start_append_process(
+                    directory,
+                    "branch-race",
+                    branch.head.record_id,
+                    "branch-run",
+                    "experiment",
+                    start_path,
+                ),
+            ]
+            await asyncio.to_thread(write_text, start_path, "go")
+
+            results = await asyncio.gather(
+                *(collect_process(process) for process in processes)
+            )
+
+            self.assertEqual(
+                [result["status"] for result in results],
+                ["success", "success"],
+            )
+            records = await storage.records("branch-race")
+            appended = {
+                record.data.get("run_id"): record
+                for record in records
+                if record.kind is SessionRecordKind.RUN_STARTED
+            }
+            self.assertEqual(appended["main-run"].parent_id, main_head.record_id)
+            self.assertEqual(
+                appended["branch-run"].parent_id,
+                branch.head.record_id,
+            )
+            self.assertEqual(
+                [record.revision for record in records],
+                list(range(1, len(records) + 1)),
+            )
+
+    async def test_lock_timeout_is_explicit_and_wait_is_cancellable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = JsonlSessionStorage(directory)
+            await storage.save(durable_session("held-lock"))
+            lock_path = (await asyncio.to_thread(jsonl_lock_files, directory))[0]
+            release_path = Path(directory) / "release"
+            script = """
+import fcntl
+import os
+import sys
+import time
+from pathlib import Path
+
+descriptor = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(descriptor, fcntl.LOCK_EX)
+print("locked", flush=True)
+while not Path(sys.argv[2]).exists():
+    time.sleep(0.005)
+fcntl.flock(descriptor, fcntl.LOCK_UN)
+os.close(descriptor)
+"""
+            holder = await asyncio.to_thread(
+                start_python_process,
+                script,
+                str(lock_path),
+                str(release_path),
+            )
+            assert holder.stdout is not None
+            self.assertEqual(
+                await asyncio.to_thread(holder.stdout.readline),
+                "locked\n",
+            )
+            try:
+                with self.assertRaises(SessionLockTimeoutError):
+                    await JsonlSessionStorage(
+                        directory,
+                        lock_timeout=0.05,
+                    ).load("held-lock")
+
+                waiting = asyncio.create_task(
+                    JsonlSessionStorage(
+                        directory,
+                        lock_timeout=None,
+                    ).load("held-lock")
+                )
+                await asyncio.sleep(0.03)
+                waiting.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(waiting, timeout=1)
+            finally:
+                await asyncio.to_thread(write_text, release_path, "release")
+                _, stderr = await asyncio.to_thread(holder.communicate, timeout=10)
+            self.assertEqual(holder.returncode, 0, stderr)
+
+    async def test_crashed_lock_holder_releases_and_tail_is_repaired(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = JsonlSessionStorage(directory)
+            original = durable_session("crashed-writer")
+            await storage.save(original)
+            journal_path = (await asyncio.to_thread(json_files, directory))[0]
+            lock_path = (await asyncio.to_thread(jsonl_lock_files, directory))[0]
+            script = """
+import fcntl
+import os
+import sys
+
+lock_descriptor = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
+journal_descriptor = os.open(sys.argv[2], os.O_WRONLY | os.O_APPEND)
+os.write(journal_descriptor, b'{"partial":')
+os.fsync(journal_descriptor)
+os._exit(23)
+"""
+            crashed = await asyncio.to_thread(
+                subprocess.run,
+                [
+                    sys.executable,
+                    "-c",
+                    script,
+                    str(lock_path),
+                    str(journal_path),
+                ],
+                check=False,
+            )
+            self.assertEqual(crashed.returncode, 23)
+            self.assertEqual(await storage.load("crashed-writer"), original)
+            head = await storage.head("crashed-writer")
+            assert head is not None
+            appended = await storage.append(
+                SessionRecordDraft.run_started(
+                    session_id="crashed-writer",
+                    agent_id="durable-agent",
+                    sequence=1,
+                    run_id="after-crash",
+                    task="continue",
+                ),
+                expected_head_id=head.record_id,
+                check_head=True,
+            )
+
+            self.assertEqual(appended.revision, 2)
+            self.assertEqual(len(await storage.records("crashed-writer")), 2)
+            await asyncio.to_thread(read_json_lines, journal_path)
 
     async def test_restored_agent_continues_and_updates_durable_session(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

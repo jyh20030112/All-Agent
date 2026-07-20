@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 from uuid import uuid4
 
+from simagentplg.session._file_lock import SessionFileLock
 from simagentplg.session.errors import (
     SessionConflictError,
     SessionSerializationError,
@@ -29,6 +33,8 @@ from simagentplg.session.tree import (
 )
 from simagentplg.session.types import AgentSession
 
+_ResultT = TypeVar("_ResultT")
+
 
 @dataclass(slots=True)
 class _JournalIndex:
@@ -46,12 +52,27 @@ class JsonlSessionStorage:
     """Append and project immutable, tree-addressable Session records.
 
     One JSONL file contains every branch for a Session. File order assigns a
-    global revision while ``parent_id`` defines the logical tree. Concurrent
-    writers from separate processes are not coordinated.
+    global revision while ``parent_id`` defines the logical tree. A stable
+    sidecar lock makes read-validate-append atomic across instances and
+    processes on POSIX filesystems.
     """
 
-    def __init__(self, root: str | Path) -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        *,
+        lock_timeout: float | None = 10.0,
+    ) -> None:
+        if lock_timeout is not None:
+            if isinstance(lock_timeout, bool) or not isinstance(
+                lock_timeout, (int, float)
+            ):
+                raise TypeError("lock_timeout must be a number or None")
+            if lock_timeout < 0 or not math.isfinite(lock_timeout):
+                raise ValueError("lock_timeout must be finite and non-negative")
+            lock_timeout = float(lock_timeout)
         self.root = Path(root).expanduser()
+        self.lock_timeout = lock_timeout
         self._lock = asyncio.Lock()
 
     async def load(self, session_id: str) -> AgentSession | None:
@@ -73,7 +94,7 @@ class JsonlSessionStorage:
         normalized_branch = self._normalize_branch_id(branch_id)
         path = self._path_for(normalized_id)
         async with self._lock:
-            index = await asyncio.to_thread(self._read_sync, path, normalized_id)
+            index = await self._read_index(path, normalized_id)
             return self._checkout_sync(
                 index,
                 normalized_id,
@@ -93,7 +114,7 @@ class JsonlSessionStorage:
         normalized_branch = self._normalize_branch_id(branch_id)
         path = self._path_for(normalized_id)
         async with self._lock:
-            index = await asyncio.to_thread(self._read_sync, path, normalized_id)
+            index = await self._read_index(path, normalized_id)
             branch = index.branches.get(normalized_branch)
             if branch is None:
                 return None
@@ -105,7 +126,7 @@ class JsonlSessionStorage:
         normalized_id = self._normalize_session_id(session_id)
         path = self._path_for(normalized_id)
         async with self._lock:
-            index = await asyncio.to_thread(self._read_sync, path, normalized_id)
+            index = await self._read_index(path, normalized_id)
             return tuple(
                 sorted(
                     index.branches.values(), key=lambda branch: branch.created_revision
@@ -128,9 +149,11 @@ class JsonlSessionStorage:
 
         if draft.kind is SessionRecordKind.BRANCH_CREATED:
             raise ValueError("use fork(), rollback(), or prepare_retry()")
+        self._validate_draft_json(draft)
         path = self._path_for(draft.session_id)
         async with self._lock:
-            return await asyncio.to_thread(
+            return await self._run_locked(
+                path,
                 self._append_sync,
                 path,
                 draft,
@@ -144,7 +167,7 @@ class JsonlSessionStorage:
         normalized_id = self._normalize_session_id(session_id)
         path = self._path_for(normalized_id)
         async with self._lock:
-            index = await asyncio.to_thread(self._read_sync, path, normalized_id)
+            index = await self._read_index(path, normalized_id)
             return tuple(index.records)
 
     async def fork(
@@ -207,7 +230,8 @@ class JsonlSessionStorage:
         )
         path = self._path_for(normalized_id)
         async with self._lock:
-            return await asyncio.to_thread(
+            return await self._run_locked(
+                path,
                 self._prepare_retry_sync,
                 path,
                 normalized_id,
@@ -239,7 +263,8 @@ class JsonlSessionStorage:
         )
         path = self._path_for(normalized_id)
         async with self._lock:
-            return await asyncio.to_thread(
+            return await self._run_locked(
+                path,
                 self._create_branch_sync,
                 path,
                 normalized_id,
@@ -285,6 +310,94 @@ class JsonlSessionStorage:
         normalized = self._normalize_session_id(session_id)
         digest = sha256(normalized.encode("utf-8")).hexdigest()
         return self.root / f"{digest}.jsonl"
+
+    @staticmethod
+    def _lock_path_for(path: Path) -> Path:
+        return path.with_name(f"{path.name}.lock")
+
+    async def _read_index(
+        self,
+        path: Path,
+        expected_session_id: str,
+    ) -> _JournalIndex:
+        return await self._run_worker(
+            self._read_locked_sync,
+            path,
+            expected_session_id,
+        )
+
+    async def _run_locked(
+        self,
+        path: Path,
+        operation: Callable[..., _ResultT],
+        *args: Any,
+    ) -> _ResultT:
+        return await self._run_worker(
+            self._call_locked_sync,
+            path,
+            operation,
+            args,
+        )
+
+    async def _run_worker(
+        self,
+        operation: Callable[..., _ResultT],
+        *args: Any,
+    ) -> _ResultT:
+        cancelled = threading.Event()
+        worker = asyncio.create_task(asyncio.to_thread(operation, *args, cancelled))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancelled.set()
+            while True:
+                try:
+                    await asyncio.shield(worker)
+                    break
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            raise
+
+    def _read_locked_sync(
+        self,
+        path: Path,
+        expected_session_id: str,
+        cancelled: threading.Event,
+    ) -> _JournalIndex:
+        lock_path = self._lock_path_for(path)
+        if not path.exists() and not lock_path.exists():
+            return _JournalIndex.empty()
+        return self._call_locked_sync(
+            path,
+            self._read_sync,
+            (path, expected_session_id),
+            cancelled,
+        )
+
+    def _call_locked_sync(
+        self,
+        path: Path,
+        operation: Callable[..., _ResultT],
+        args: tuple[Any, ...],
+        cancelled: threading.Event,
+    ) -> _ResultT:
+        lock = SessionFileLock(
+            self._lock_path_for(path),
+            timeout=self.lock_timeout,
+        )
+        with lock.acquire(cancelled):
+            return operation(*args)
+
+    @staticmethod
+    def _validate_draft_json(draft: SessionRecordDraft) -> None:
+        try:
+            json.dumps(draft.data, allow_nan=False, sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            raise SessionSerializationError(
+                f"Session record is not JSON-compatible: {exc}"
+            ) from exc
 
     def _append_sync(
         self,

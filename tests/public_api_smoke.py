@@ -44,6 +44,8 @@ def main() -> None:
         "CompactionTrigger",
         "ModelCompactor",
         "JsonlSessionStorage",
+        "SessionTreeStorage",
+        "SessionLockTimeoutError",
         "SessionRecord",
         "SessionBranch",
         "SessionCheckout",

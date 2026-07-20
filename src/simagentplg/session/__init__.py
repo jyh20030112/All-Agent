@@ -8,6 +8,7 @@ from simagentplg.session.codec import (
 from simagentplg.session.errors import (
     SessionConflictError,
     SessionError,
+    SessionLockTimeoutError,
     SessionSerializationError,
     SessionStorageError,
 )
@@ -21,7 +22,11 @@ from simagentplg.session.journal import (
 from simagentplg.session.jsonl import JsonlSessionStorage
 from simagentplg.session.memory import MemorySessionStorage
 from simagentplg.session.recorder import SessionRecorder
-from simagentplg.session.storage import SessionJournalStorage, SessionStorage
+from simagentplg.session.storage import (
+    SessionJournalStorage,
+    SessionStorage,
+    SessionTreeStorage,
+)
 from simagentplg.session.tree import (
     SessionBranch,
     SessionBranchIntent,
@@ -42,6 +47,7 @@ __all__ = [
     "SessionCompaction",
     "SessionStorage",
     "SessionJournalStorage",
+    "SessionTreeStorage",
     "JsonlSessionStorage",
     "MemorySessionStorage",
     "SessionRecorder",
@@ -50,6 +56,7 @@ __all__ = [
     "session_from_dict",
     "SessionError",
     "SessionConflictError",
+    "SessionLockTimeoutError",
     "SessionSerializationError",
     "SessionStorageError",
     "SESSION_JOURNAL_SCHEMA_VERSION",

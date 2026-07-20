@@ -364,11 +364,20 @@ an interrupted write is ignored and repaired before the next append. Invalid
 JSON in a completed line and unsupported journal schema versions raise
 `SessionSerializationError` instead of looking like a missing Session.
 
+`JsonlSessionStorage` coordinates every read-validate-append transaction with a
+stable `.jsonl.lock` sidecar. The lock combines process-local coordination with
+a POSIX advisory file lock, so separate storage instances and Python processes
+cannot allocate the same revision or silently replace a branch head. Conditional
+appends still report stale heads as `SessionConflictError`; lock acquisition
+timeouts report `SessionLockTimeoutError`. Configure the deadline with
+`JsonlSessionStorage(root, lock_timeout=...)`, or pass `None` to wait until the
+operation is cancelled. Lock waits run outside the event loop.
+
 `restore_session()` verifies Agent identity and rejects unfinished Runs. Core
 does not replay an interrupted Tool call because it may already have produced
-an external side effect. Separate processes may read completed snapshots, but
-concurrent writers to the same Session are not yet coordinated in this
-file-backed implementation.
+an external side effect. The file-backed lock contract targets local POSIX
+filesystems; network filesystem deployments must verify their advisory-lock
+semantics or provide another `SessionTreeStorage` backend.
 
 ## Runtime policy
 
@@ -684,7 +693,7 @@ The package root exports:
 - Runtime: `RuntimePolicy`, `AgentRunResult`, `RunUsage`, `AgentRunError`, `RunStatus`, `StopReason`
 - Cancellation: `CancellationToken`, `CancellationSource`, `AgentCancelledError`
 - Events: `AgentEvent`, `AgentEventSink`, `CompositeAgentEventSink`, `AssistantTextDelta`, `AssistantThinkingDelta`, `ToolProgressed`, `ContextPressureEvaluated`, `CompactionStarted`, `CompactionCompleted`, `CompactionFailed`
-- Session: `AgentSession`, `SessionRecorder`, `SessionStorage`, `SessionJournalStorage`, `MemorySessionStorage`, `JsonlSessionStorage`, `SessionCompaction`, `SessionRecord`, `SessionRecordDraft`, `SessionRecordKind`, `SessionBranchIntent`, `SessionBranch`, `SessionCheckout`, `SessionRetry`, `DEFAULT_SESSION_BRANCH`, `SESSION_SCHEMA_VERSION`, `SESSION_JOURNAL_SCHEMA_VERSION`, `session_to_dict`, `session_from_dict`, `SessionError`, `SessionSerializationError`, `SessionStorageError`, `SessionConflictError`
+- Session: `AgentSession`, `SessionRecorder`, `SessionStorage`, `SessionJournalStorage`, `SessionTreeStorage`, `MemorySessionStorage`, `JsonlSessionStorage`, `SessionCompaction`, `SessionRecord`, `SessionRecordDraft`, `SessionRecordKind`, `SessionBranchIntent`, `SessionBranch`, `SessionCheckout`, `SessionRetry`, `DEFAULT_SESSION_BRANCH`, `SESSION_SCHEMA_VERSION`, `SESSION_JOURNAL_SCHEMA_VERSION`, `session_to_dict`, `session_from_dict`, `SessionError`, `SessionSerializationError`, `SessionStorageError`, `SessionConflictError`, `SessionLockTimeoutError`
 - Context: `AgentContextBuilder`, `ContextBuildResult`, `ContextBudget`, `ContextUsageEstimate`, `CompactionPolicy`, `AutoCompactionPolicy`, `CompactionDecision`, `CompactionPreparation`, `MessageTokenEstimator`, `estimate_context_usage`, `prepare_compaction`
 - Compaction: `CompactionRuntime`, `Compactor`, `ModelCompactor`, `CompactionContextBuilder`, `CompactorOutput`, `CompactionRequest`, `CompactionResult`, `CompactionStatus`, `CompactionTrigger`, `SummaryEntry`
 - Tools: `StepOutcome`, `ToolControl`, `ToolProgressUpdate`, `ToolProgressReporter`, `BaseHandler`, `MethodToolHandler`, `McpToolHandler`

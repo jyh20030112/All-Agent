@@ -12,3 +12,7 @@ class SessionStorageError(SessionError):
 
 class SessionConflictError(SessionStorageError):
     """A branch head changed before a conditional append could commit."""
+
+
+class SessionLockTimeoutError(SessionStorageError):
+    """A Session journal lock could not be acquired before its deadline."""

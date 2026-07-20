@@ -2,7 +2,7 @@
 
 > 更新日期：2026-07-20
 >
-> SimAgentPlg 基线：`6161281`，项目版本 `0.5.0`
+> SimAgentPlg 基线：`da09e60` 后的 Session Journal Hardening 工作树，项目版本 `0.5.0`
 >
 > Pi 子模块基线：`f4e9ca74`
 >
@@ -22,6 +22,7 @@ SimAgentPlg 已经不只是 Agent Loop。当前实现覆盖了通用 Agent Core 
 - Provider Context Overflow 标准化、最多一次 compact-and-retry
 - Durable JSONL Session Journal
 - Session Tree、Branch Head、Checkout、Fork、Rollback 和整 Run Retry
+- 跨实例 / 跨进程 Session Journal 原子写入与 `SessionTreeStorage` 协议
 - Python 3.12 / 3.13 CI、构建 smoke test 与 PyPI Trusted Publishing CD
 
 因此，`BaseAgent` 已经是一个可独立使用的轻量 Harness 组装根，而不再只是
@@ -29,15 +30,15 @@ SimAgentPlg 已经不只是 Agent Loop。当前实现覆盖了通用 Agent Core 
 
 与 Pi 的主要差距已经从“缺少持久化和自动压缩”转移到以下领域：
 
-1. **持久化并发正确性**：JSONL 暂未协调同一 Session 的多进程并发写入。
-2. **行为控制面**：没有 Steering、Follow-up、Continue 和通用行为型 Hook。
-3. **工具调度**：Tool Call 仍顺序执行，工具集合主要在构造或启动时确定。
-4. **Provider 广度**：只有 OpenAI-compatible Adapter，Canonical Tool Schema 仍偏 OpenAI。
+1. **行为控制面**：没有 Steering、Follow-up、Continue 和通用行为型 Hook。
+2. **工具调度**：Tool Call 仍顺序执行，工具集合主要在构造或启动时确定。
+3. **Provider 广度**：只有 OpenAI-compatible Adapter，Canonical Tool Schema 仍偏 OpenAI。
+4. **长 Journal 性能**：写入与读取仍会线性重建索引，需要按实际规模决定索引和归档策略。
 5. **ExecutionEnv / CodeAgent**：文件、Shell、Git、Workspace、Sandbox、Approval 和 UI/RPC
    明确留给派生层，当前仓库尚未实现该层。
 
-当前最重要的判断是：**先把刚完成的 Durable Session Tree 做到并发可靠，再继续扩展
-Harness 控制面。** 否则 Steering、后台任务或多进程服务会放大同一 Journal 的竞争问题。
+Session Journal 的并发正确性边界已经补齐。下一阶段应进入 **Harness 行为控制面**，先定义
+Steering、Follow-up 和 Continue 的安全点与队列语义，再考虑并行 Tool 和后台执行。
 
 ## 2. 当前架构
 
@@ -83,7 +84,7 @@ BaseAgent
 | `ModelCompactor` | 将借用的 `ModelAdapter` 适配为 `Compactor`，Prompt 仍由应用提供 |
 | `AgentEventEmitter` | 分配 `run_id` 和事件序号，按顺序发布只读事件 |
 | `SessionRecorder` | 将生命周期事件转换为指定 Branch 的语义 Journal Record |
-| `JsonlSessionStorage` | 追加 JSONL、校验树、回放任意节点、管理 Branch 和 Head |
+| `JsonlSessionStorage` | 原子追加 JSONL、跨进程锁、校验树、回放节点、管理 Branch 和 Head |
 | `ToolRuntime` | 工具路由、Middleware、执行、Progress、控制信号和重复调用保护 |
 | `ModelAdapter` | Provider Client 生命周期、请求和响应归一化 |
 | `SkillManager` | Skill 发现、metadata、显式选择和上下文投影 |
@@ -106,7 +107,7 @@ BaseAgent.run(task)
   → ToolProgressed* / ToolCompleted
   → AgentRunResult
   → AgentFinished
-  → SessionRecorder append + fsync
+  → SessionRecorder locked append + fsync
 ```
 
 Provider 在输出任何 Delta 前报告 Context Overflow 时，Orchestrator 可以执行一次自动压缩、
@@ -345,25 +346,32 @@ Pi 当前默认并行执行允许并行的 Tool Call，同时保证最终 Tool R
 
 ## 6. 当前技术边界与风险
 
-### 6.1 JSONL 多进程写入仍是正确性缺口
+### 6.1 JSONL 多进程写入正确性——已加固
 
-`JsonlSessionStorage` 的 `asyncio.Lock` 只保护单个实例。两个进程或两个未共享锁的 Storage
-实例可能同时读取相同 Head，然后都生成下一 Revision。`expected_head_id` 已定义冲突
-语义，但 read-validate-append 尚未被跨进程锁包围。
+`JsonlSessionStorage` 现在为每个 Session 使用稳定 `.jsonl.lock` Sidecar，并组合进程内共享锁
+与 POSIX Advisory Lock。读取、修复尾行、校验 `expected_head_id`、分配 Revision / Parent、
+追加和 `fsync` 位于同一临界区。CAS 失败继续返回 `SessionConflictError`，锁等待超时返回
+`SessionLockTimeoutError`；等待在 Worker Thread 中执行，可以取消而不阻塞 Event Loop。
 
-这是当前最高优先级，因为它可能造成 Journal 损坏，而不是单纯缺少便利功能。
+该实现面向 macOS / Linux 本地文件系统。NFS 等网络文件系统需要验证 Advisory Lock 语义，
+或者提供其他 `SessionTreeStorage` Backend。
 
-### 6.2 Tree API 尚未完全抽象为 Storage 协议
+### 6.2 Tree Storage 协议——已完成
 
-`SessionJournalStorage` 暴露 `checkout()` 和条件 `append()`，但 `fork()`、`rollback()`、
-`prepare_retry()`、`head()` 和 `list_branches()` 仍属于 `JsonlSessionStorage` 具体 API。
-如果未来增加数据库或远程 Storage，需要先定义独立 `SessionTreeStorage` 协议。
+公开的 `SessionTreeStorage` 在 `SessionJournalStorage` 之上统一 `records()`、`head()`、
+`list_branches()`、`fork()`、`rollback()` 和 `prepare_retry()`。上层可以仅依赖协议编程，
+不必绑定 JSONL 具体实现。
 
 ### 6.3 JSONL 读取成本随 Journal 线性增长
 
 每次操作都会验证完整文件并重建索引；任意节点投影还需要沿父链回放。当前 Checkpoint
 可以缩短语义重建，但没有持久 Sidecar Index、Checkpoint Policy 或归档策略。长生命周期
 服务需要明确性能上限。
+
+可重复基准位于 `benchmarks/session_journal.py`。本机 1,000 条小型 Checkpoint Journal
+约 401 KB，完整 Load 约 14.7 ms；从空文件逐条构建约 7.68 s，平均追加约 7.68 ms。
+这验证了当前规模仍可用，但也确认逐次追加的累计成本呈二次增长。现阶段不增加 Index；
+当真实 Session 接近数千至数万 Record 时，再设计可完全从 JSONL 重建的 Sidecar Index。
 
 ### 6.4 Canonical Tool Schema 仍偏 Provider
 
@@ -404,14 +412,15 @@ Adapter 的真实差异验证，例如 Thinking、Cache Usage、Tool Schema 和�
 - Branch Head、Checkout、Fork、Rollback、Retry
 - Branch-aware SessionRecorder 和 Head Conflict
 
-### 阶段四：Session Journal Hardening——下一阶段
+### 阶段四：Session Journal Hardening——已完成
 
 - 跨实例、跨进程 read-validate-append 原子性
 - 后端无关的 `SessionTreeStorage` 协议
-- Journal Index / Checkpoint Policy
 - 多进程竞争和 Crash Recovery 测试
+- 锁超时、取消和异常退出恢复
+- 长 Journal 基准；Sidecar Index 延后到真实规模需要时
 
-### 阶段五：Harness 行为控制面
+### 阶段五：Harness 行为控制面——下一阶段
 
 - Steering Queue
 - Follow-up Queue
@@ -441,46 +450,34 @@ CodeAgent
 
 ## 8. 下一步任务建议
 
-下一步建议实现 **Session Journal Hardening**，暂不继续增加新的用户可见 Session 操作。
+下一步建议实现 **Harness 行为控制面**。重点不是简单增加三个 Queue API，而是先定义输入在
+Agent Run 的哪个安全点生效，避免 Steering 与 Tool 副作用、Compaction 或 Session Record
+顺序相互冲突。
 
 ### 8.1 具体实现范围
 
-1. 定义 `SessionTreeStorage` 协议，统一：
-   - `checkout()`
-   - `head()` / `list_branches()`
-   - `fork()` / `rollback()` / `prepare_retry()`
-   - 条件 `append()`
-2. 为 JSONL 增加跨进程锁，将以下过程放进同一个临界区：
-
-   ```text
-   acquire lock
-     → read complete records
-     → repair incomplete tail
-     → validate expected_head_id
-     → assign revision / parent_id
-     → append + fsync
-   release lock
-   ```
-
-3. 保留 `SessionConflictError` 作为 CAS 失败，不把竞争错误伪装成序列化损坏。
-4. 明确锁文件生命周期、超时、取消和平台差异；锁等待不能阻塞 Event Loop。
-5. 增加独立进程竞争测试：
-   - 两个 Writer 同时追加同一 Branch
-   - 相同 `expected_head_id` 时只有一个成功
-   - 不同 Branch 可以保持正确父链
-   - Writer 中断后尾行可恢复
-   - Lock Holder 异常退出后其他进程可继续
-6. 为长 Journal 增加基准测试，再决定是否立即实现 Sidecar Index。Index 必须可从 JSONL
-   重建，不能成为第二个事实来源。
+1. 定义三个不同意图：
+   - **Steering**：当前 Run 下一次 Model 请求前注入控制消息。
+   - **Follow-up**：当前 Run 正常结束后，以新 Run 执行排队任务。
+   - **Continue**：在没有活动 Run 时，基于当前 Session Head 显式继续，而不是隐式重放 Tool。
+2. 在 `BaseAgent` 建立有界、可观察、可取消的输入队列，并明确同一时刻只有一个 Active Run。
+3. 在 Orchestrator 的安全点消费 Steering：完成当前 Model Response 和已开始的 Tool 批次后，
+   在下一次 Model Call 前注入；不打断正在执行的副作用 Tool。
+4. 让 Follow-up 在 `AgentFinished` 和 Session 终态 Record 落盘后启动，保持终态事件屏障。
+5. 为行为控制定义独立于只读 `AgentEventSink` 的 Hook / Controller 边界；Event 观察者不能通过
+   返回值偷偷修改 Core 行为。
+6. 明确 Queue 的持久化策略：第一版仅保证进程内队列，只有真正被接受的 Steering 和开始执行
+   的 Follow-up 才进入 Session Journal；不把尚未执行的内存队列伪装成 Durable Job Queue。
 
 ### 8.2 验收标准
 
-- 两个独立 Python 进程不能生成相同 Revision 或破坏 Branch Head。
-- 条件追加的冲突稳定返回 `SessionConflictError`。
-- 进程崩溃后锁可释放，已有完整 Record 不丢失。
-- Python 3.12 / 3.13、macOS / Linux 语义一致。
-- 现有 `load(session_id)`、单进程 Recorder 和 0.4 JSONL 文件继续兼容。
-- Tree 操作可以仅依赖 `SessionTreeStorage` Protocol 编程。
+- Steering 只在定义好的 Model Call 边界生效，不丢失、不重复，也不插入 Tool Call / Result
+  配对之间。
+- Follow-up 必须等待前一个 Run 的 `AgentFinished` 与 Session `run_finished` 完成。
+- Continue 不自动重放未确认的 Tool 副作用。
+- Queue 满、Agent Closing、取消和并发提交都有明确结果，不静默丢弃输入。
+- 现有 `run()`、事件顺序、Cancellation、Compaction 和 SessionRecorder 行为保持兼容。
+- 多个 Steering / Follow-up 的 FIFO 顺序由确定性测试覆盖。
 
-完成这一阶段后，再进入 Steering / Follow-up。届时队列和后台执行即使由多个 Worker
-驱动，也不会建立在一个存在并发破坏窗口的 Session Journal 上。
+完成行为控制面后，再进入 Parallel Tool Calls。届时可以复用同一安全点模型来区分可并行的
+只读 Tool 与必须串行的副作用 Tool。
