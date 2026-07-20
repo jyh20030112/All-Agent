@@ -2,7 +2,7 @@
 
 > 更新日期：2026-07-20
 >
-> SimAgentPlg 基线：`da09e60` 后的 Session Journal Hardening 工作树，项目版本 `0.5.0`
+> SimAgentPlg 基线：`da09e60` 后的 Session、Steering 与 Follow-up 工作树，项目版本 `0.5.0`
 >
 > Pi 子模块基线：`f4e9ca74`
 >
@@ -24,6 +24,7 @@ SimAgentPlg 已经不只是 Agent Loop。当前实现覆盖了通用 Agent Core 
 - Session Tree、Branch Head、Checkout、Fork、Rollback 和整 Run Retry
 - 跨实例 / 跨进程 Session Journal 原子写入与 `SessionTreeStorage` 协议
 - 有界 FIFO Steering Queue、Model-call Safe Point 与 Session 审计
+- Follow-up Run Chain、有界 FIFO、Waitable Handle 与终态 Sink 屏障
 - Python 3.12 / 3.13 CI、构建 smoke test 与 PyPI Trusted Publishing CD
 
 因此，`BaseAgent` 已经是一个可独立使用的轻量 Harness 组装根，而不再只是
@@ -31,15 +32,15 @@ SimAgentPlg 已经不只是 Agent Loop。当前实现覆盖了通用 Agent Core 
 
 与 Pi 的主要差距已经从“缺少持久化和自动压缩”转移到以下领域：
 
-1. **行为控制面**：Steering 基础版已完成；尚无 Follow-up、Continue 和通用行为控制策略。
+1. **行为控制面**：Steering 与 Follow-up 基础版已完成；尚无 Continue 和通用行为控制策略。
 2. **工具调度**：Tool Call 仍顺序执行，工具集合主要在构造或启动时确定。
 3. **Provider 广度**：只有 OpenAI-compatible Adapter，Canonical Tool Schema 仍偏 OpenAI。
 4. **长 Journal 性能**：写入与读取仍会线性重建索引，需要按实际规模决定索引和归档策略。
 5. **ExecutionEnv / CodeAgent**：文件、Shell、Git、Workspace、Sandbox、Approval 和 UI/RPC
    明确留给派生层，当前仓库尚未实现该层。
 
-Session Journal 的并发正确性边界和 Steering Safe Point 已补齐。行为控制面的下一批应实现
-Follow-up，再复用相同队列回执和终态屏障设计 Continue。
+Session Journal 的并发正确性边界、Steering Safe Point 和 Follow-up Run Chain 已补齐。行为
+控制面的下一批应明确并实现 Continue / Resume-safe-point 语义。
 
 ## 2. 当前架构
 
@@ -47,6 +48,7 @@ Follow-up，再复用相同队列回执和终态屏障设计 Continue。
 BaseAgent
   ├── Active Operation / CancellationSource
   ├── Bounded Steering Queue / Control Receipt
+  ├── Follow-up FIFO / Run Handle / Run-chain Gate
   ├── ModelAdapter
   │     └── OpenAIModelAdapter
   ├── AgentOrchestrator
@@ -75,7 +77,7 @@ BaseAgent
 
 | 组件 | 当前职责 |
 |---|---|
-| `BaseAgent` | 依赖组装、操作串行化、Steering、取消、空闲等待、资源生命周期、Session Restore |
+| `BaseAgent` | 依赖组装、Run Chain、Steering、Follow-up、取消、空闲等待、资源生命周期、Session Restore |
 | `AgentOrchestrator` | 模型—工具循环、自动压缩、Overflow Recovery、结构化终止 |
 | `AgentState` | 当前消息、Turn、任务状态和运行结果 |
 | `AgentContextBuilder` | 构造 Agent 投影和 Provider-safe 请求，注入 Skill 与临时控制消息 |
@@ -111,6 +113,7 @@ BaseAgent.run(task)
   → AgentRunResult
   → AgentFinished
   → SessionRecorder locked append + fsync
+  → optional next Follow-up Run
 ```
 
 Provider 在输出任何 Delta 前报告 Context Overflow 时，Orchestrator 可以执行一次自动压缩、
@@ -187,7 +190,23 @@ Tool Call 必须先产生对应 Tool Result，Steering 才会作为新的 User M
 成功应用会发出 `SteeringApplied` 并写入 `steering_applied` Session Record。Run 在下一个
 Model Call 前结束时，未消费输入发出 `SteeringDiscarded`，但不伪装成 Durable History。
 
-### 3.5 Usage、Context 与 Compaction
+### 3.5 Follow-up Run Chain
+
+`BaseAgent.follow_up(task)` 将独立任务提交到当前 Run Chain 的有界 FIFO，并返回
+`FollowUpHandle`。Handle 的 Receipt 只表示是否入队；`wait()` 最终返回该独立 Run 的
+`AgentRunResult`。取消某个等待者不会取消队列任务。
+
+Follow-up 必须等待前一个 `AgentFinished` 和全部 Event Sink 完成后才开始。每项都有独立
+`run_id`、事件序列和 Session Run。额外的 Run-chain Gate 会阻止已经等待锁的直接 `run()`、
+`compact()` 或生命周期操作插入 Follow-up 之前；首个直接 `run()` 仍会在自身结果完成后立即
+返回，不等待整条 Follow-up Chain。
+
+默认 `FollowUpFailurePolicy.DISCARD` 会在前一 Run 失败或取消时丢弃余项；显式选择
+`CONTINUE` 才继续。Queue Full、Agent Idle、Shutdown、前序 Run 非成功和等待者取消都有明确
+Receipt 或异常。Pending Queue 只存在于进程内，只有真正开始的 Follow-up 才通过
+`SessionRecorder` 写入 `run_started`。
+
+### 3.6 Usage、Context 与 Compaction
 
 当前上下文管理链路已经完整接通：
 
@@ -214,7 +233,7 @@ ModelUsage
 - Compactor 失败安全终止，不安装部分 Summary。
 - Compaction 通过 Session Record 持久化，原始审计 Entry 不删除。
 
-### 3.6 Durable JSONL Session Tree
+### 3.7 Durable JSONL Session Tree
 
 `SessionRecorder` 对 Journal Storage 追加语义 Record：
 
@@ -260,7 +279,7 @@ JSONL 的当前耐久性保证：
 
 尚未保证的是多个进程对同一 Session 的 read-validate-append 原子性。
 
-### 3.7 交付与兼容性
+### 3.8 交付与兼容性
 
 - Python 3.12 和 3.13 质量矩阵
 - Ruff、Mypy、Unit Test、sdist/wheel 和安装后 Public API smoke test
@@ -283,7 +302,7 @@ CD 属于交付能力，不改变 Core Runtime 语义。
 | Tool Middleware / Hook | `beforeToolCall`、`afterToolCall` | `ToolMiddleware` | 部分具备 |
 | Stop-after-turn Hook | `shouldStopAfterTurn` | 无通用接口 | 未实现 |
 | Steering | Queue + safe turn boundary | 有界 FIFO + Model-call Safe Point | 基础已具备 |
-| Follow-up | Agent outer loop queue | 无 | 未实现 |
+| Follow-up | Agent outer loop queue | 独立 FIFO Run Chain + Waitable Handle | 基础已具备 |
 | Continue | `continue()` | 只能通过新 Run / Retry Branch | 语义未对齐 |
 | Parallel Tool Calls | 默认并行，可强制顺序 | 顺序执行 | 未实现 |
 | Dynamic Tool Set | Runtime 可替换 | 构造/启动时为主 | 未实现 |
@@ -441,7 +460,7 @@ Adapter 的真实差异验证，例如 Thinking、Cache Usage、Tool Schema 和�
 ### 阶段五：Harness 行为控制面——进行中
 
 - Steering Queue、Safe Point、回执和 Session 审计——已完成基础版
-- Follow-up Queue——下一批
+- Follow-up Queue、Run Handle、失败策略和终态屏障——已完成基础版
 - Continue / Resume-safe-point 语义
 - 独立于只读 Event 的行为型 Hook
 - Queue 与 Session Journal 的持久化边界
@@ -468,26 +487,25 @@ CodeAgent
 
 ## 8. 下一步任务建议
 
-Steering 第一批已经完成。下一步建议实现 **Follow-up Queue**，复用 `ControlInput`、
-`ControlReceipt`、有界 FIFO 和明确的 Queue 状态，但不与当前 Run 的 Steering 混用。
+Steering 和 Follow-up 基础版已经完成。下一步建议实现 **Continue / Resume Safe Point**，让
+已经停止但仍保留上下文的 Agent 可以在没有新增 User Task 的情况下继续推理。
 
 ### 8.1 具体实现范围
 
-1. 扩展 `ControlInputKind.FOLLOW_UP`，但为 Follow-up 使用独立有界 FIFO。
-2. 明确提交回执和最终结果的关系：即时 Receipt 只表示入队，调用方还需要可等待的 Run Handle。
-3. 当前 Run 必须完成 `AgentFinished` 及所有 Event Sink 后，才能启动下一个 Follow-up Run。
-4. 每个 Follow-up 创建独立 `run_id`、事件序列和 `AgentRunResult`，不并入前一个 Run。
-5. 当前 Run 被取消或失败时，默认不自动执行后续任务；由显式 Policy 决定 discard 或 continue。
-6. 第一版仍保持进程内队列。只有 Follow-up 真正开始执行时才写 `run_started`，不把 Pending Queue
-   伪装成 Durable Job Queue。
+1. 定义 `continue_run()` 的可进入状态：Agent 必须空闲、存在可继续的历史，并且没有未完成 Run。
+2. Continue 创建独立 `run_id`、事件序列和 `AgentRunResult`，但不重复追加上一条 User Message。
+3. 明确哪些终态允许继续；默认允许文本完成、步数或预算边界后的显式继续，拒绝不完整 Tool 状态。
+4. Continue 复用 Run-chain Gate、Cancellation、Steering Safe Point 和终态 Sink 屏障。
+5. Session Journal 明确记录 Continue 意图，使回放能区分“新任务”和“无新消息续跑”。
+6. 第一版只支持进程内当前 Agent State；跨进程 Resume 仍通过显式 Session Restore 完成。
 
 ### 8.2 验收标准
 
-- Follow-up 必须等待前一个 Run 的 `AgentFinished` 与 Session `run_finished` 完成。
-- 多个 Follow-up 以 FIFO 顺序获得独立结果，不与 Steering 相互抢占。
-- Queue 满、Run 取消、Agent Shutdown 和调用方取消等待都有明确结果。
-- `wait_for_idle()` 必须覆盖所有已接受的 Follow-up 及其终态 Sink。
-- 现有直接 `run()` 的返回语义和操作串行化保持兼容。
+- Continue 不产生重复 User Message，也不复用前一个 `run_id`。
+- Continue 的首个模型请求包含已提交的完整历史，并可在运行中接受 Steering。
+- Active Run、未完成 Tool Result、空历史和 Shutdown 均有明确拒绝结果。
+- `abort()`、`wait_for_idle()`、Event Sink 和 Session Recorder 与普通 Run 保持同一终态保证。
+- 现有 `run()`、Follow-up 和 Retry Branch 语义不发生变化。
 
-Follow-up 完成后再实现 Continue；之后根据真实需求抽取 `BehaviorController`，不复制已有的
-Tool Middleware 能力。
+Continue 完成后再根据真实调用模式抽取 `BehaviorController`，不复制已有的 Tool Middleware
+能力。

@@ -174,6 +174,42 @@ ends or is cancelled before another model-call safe point, the pending input is
 not persisted and emits `SteeringDiscarded`. An accepted receipt therefore
 means “queued”, while these events expose the final applied/discarded outcome.
 
+### Follow-up runs
+
+`follow_up()` queues an independent Run behind the active Run chain and returns
+a waitable handle:
+
+```python
+import asyncio
+
+initial = asyncio.create_task(agent.run(task="Inspect the deployment failure."))
+await asyncio.sleep(0)  # allow the Run chain to become active
+follow_up = await agent.follow_up("Now propose the smallest safe fix.")
+
+initial_result = await initial
+if follow_up.accepted:
+    follow_up_result = await follow_up.wait()
+```
+
+Each Follow-up receives its own `run_id`, lifecycle events, Session Run, and
+`AgentRunResult`. It starts only after the previous `AgentFinished` and every
+awaited Event Sink have settled. A Run-chain gate keeps already-waiting direct
+`run()`, `compact()`, and lifecycle operations from interleaving ahead of the
+Follow-up FIFO.
+
+Configure the queue with `follow_up_queue_capacity`. Rejected handles expose an
+immediate `ControlReceipt` with `AGENT_IDLE`, `QUEUE_FULL`, or `RUN_CLOSING`, and
+`wait()` raises `FollowUpRejectedError`. By default, a failed or cancelled Run
+discards remaining accepted handles with `FollowUpDiscardedError`; opt into
+`FollowUpFailurePolicy.CONTINUE` to keep processing. Cancelling one caller's
+`wait()` does not cancel the queued Run. `shutdown()` discards pending
+Follow-ups, while `wait_for_idle()` includes accepted Follow-ups and their
+terminal sinks.
+
+Pending Follow-ups remain process-local. `SessionRecorder` writes `run_started`
+only when a Follow-up actually begins, so the queue is not presented as a
+durable job system.
+
 ### Streaming responses
 
 `BaseAgent.run()` still returns one final `AgentRunResult`, while provisional
@@ -720,7 +756,7 @@ The package root exports:
 - Runtime: `RuntimePolicy`, `AgentRunResult`, `RunUsage`, `AgentRunError`, `RunStatus`, `StopReason`
 - Cancellation: `CancellationToken`, `CancellationSource`, `AgentCancelledError`
 - Events: `AgentEvent`, `AgentEventSink`, `CompositeAgentEventSink`, `AssistantTextDelta`, `AssistantThinkingDelta`, `ToolProgressed`, `SteeringApplied`, `SteeringDiscarded`, `ContextPressureEvaluated`, `CompactionStarted`, `CompactionCompleted`, `CompactionFailed`
-- Control: `ControlInputKind`, `ControlStatus`, `ControlInput`, `ControlReceipt`
+- Control: `ControlInputKind`, `ControlStatus`, `ControlInput`, `ControlReceipt`, `FollowUpFailurePolicy`, `FollowUpDiscardReason`, `FollowUpHandle`, `FollowUpError`, `FollowUpRejectedError`, `FollowUpDiscardedError`
 - Session: `AgentSession`, `SessionRecorder`, `SessionStorage`, `SessionJournalStorage`, `SessionTreeStorage`, `MemorySessionStorage`, `JsonlSessionStorage`, `SessionCompaction`, `SessionRecord`, `SessionRecordDraft`, `SessionRecordKind`, `SessionBranchIntent`, `SessionBranch`, `SessionCheckout`, `SessionRetry`, `DEFAULT_SESSION_BRANCH`, `SESSION_SCHEMA_VERSION`, `SESSION_JOURNAL_SCHEMA_VERSION`, `session_to_dict`, `session_from_dict`, `SessionError`, `SessionSerializationError`, `SessionStorageError`, `SessionConflictError`, `SessionLockTimeoutError`
 - Context: `AgentContextBuilder`, `ContextBuildResult`, `ContextBudget`, `ContextUsageEstimate`, `CompactionPolicy`, `AutoCompactionPolicy`, `CompactionDecision`, `CompactionPreparation`, `MessageTokenEstimator`, `estimate_context_usage`, `prepare_compaction`
 - Compaction: `CompactionRuntime`, `Compactor`, `ModelCompactor`, `CompactionContextBuilder`, `CompactorOutput`, `CompactionRequest`, `CompactionResult`, `CompactionStatus`, `CompactionTrigger`, `SummaryEntry`
