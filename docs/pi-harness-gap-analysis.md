@@ -2,7 +2,7 @@
 
 > 更新日期：2026-07-21
 >
-> SimAgentPlg 基线：`da09e60` 后的 Session、Steering 与 Follow-up 工作树，项目版本 `0.5.0`
+> SimAgentPlg 基线：`42975e5` 后的 Core 能力工作树，项目版本 `0.5.0`
 >
 > Pi 子模块基线：`f4e9ca74`
 >
@@ -27,6 +27,7 @@ SimAgentPlg 已经不只是 Agent Loop。当前实现覆盖了通用 Agent Core 
 - Follow-up Run Chain、有界 FIFO、Waitable Handle 与终态 Sink 屏障
 - Continue / Resume Safe Point、独立 Run Intent 与 Session 回放
 - `after_turn` Behavior Hooks、隔离 Turn Snapshot 与结构化策略停止
+- Parallel Read-only Tool Calls、显式 Side-effect 属性与确定性结果提交
 - Python 3.12 / 3.13 CI、构建 smoke test 与 PyPI Trusted Publishing CD
 
 因此，`BaseAgent` 已经是一个可独立使用的轻量 Harness 组装根，而不再只是
@@ -36,14 +37,14 @@ SimAgentPlg 已经不只是 Agent Loop。当前实现覆盖了通用 Agent Core 
 
 1. **行为控制面**：Steering、Follow-up、Continue 与 `after_turn` Hook 基础版已完成；
    `before_model` 等更广义行为注入仍未实现。
-2. **工具调度**：Tool Call 仍顺序执行，工具集合主要在构造或启动时确定。
+2. **工具调度**：只读 Tool Call 已可安全并行，但工具集合仍主要在构造或启动时确定。
 3. **Provider 广度**：只有 OpenAI-compatible Adapter，Canonical Tool Schema 仍偏 OpenAI。
 4. **长 Journal 性能**：写入与读取仍会线性重建索引，需要按实际规模决定索引和归档策略。
 5. **ExecutionEnv / CodeAgent**：文件、Shell、Git、Workspace、Sandbox、Approval 和 UI/RPC
    明确留给派生层，当前仓库尚未实现该层。
 
-Session Journal 的并发正确性边界以及 Steering、Follow-up、Continue、`after_turn` Behavior
-控制链已补齐。下一批应进入 Parallel Tool Calls 与 Side-effect Policy。
+Session Journal 的并发正确性边界、行为控制链以及第一批安全并行工具调度已补齐。下一批应
+抽取 Provider-neutral Canonical Tool Definition，为第二个真实 Provider Adapter 清除结构耦合。
 
 ## 2. 当前架构
 
@@ -72,7 +73,8 @@ BaseAgent
   │                       └── Session Tree / Branch Heads
   ├── AgentState
   ├── ToolRuntime
-  │     ├── BaseHandler / MethodToolHandler
+  │     ├── Read-only Batch Scheduler / Side-effect Barrier
+  │     ├── BaseHandler / MethodToolHandler / ToolEffect
   │     ├── McpToolHandler
   │     └── ToolMiddleware
   └── SkillManager
@@ -153,8 +155,13 @@ Usage 和 Provider Error 归一化。只实现 `complete()` 的 Adapter 仍可�
 - Cancellation 与 Progress
 - 重复调用保护
 - MCP Tool 适配
+- 显式 `ToolEffect.READ_ONLY` / `SIDE_EFFECTING`
+- Opt-in Parallel Read-only Batch 与稳定源顺序提交
 
-当前同一 Assistant Message 中的 Tool Call 按顺序执行；这与 Pi 当前默认并行策略不同。
+默认仍按顺序执行。启用 `RuntimePolicy.parallel_tool_calls` 后，只有连续且显式标注为
+`READ_ONLY` 的调用才并行；未标注、未知和 `SIDE_EFFECTING` 工具形成串行屏障。开始事件按
+源顺序发出，Progress 可以交错，完成事件、Agent History 和 Session Tool Message 按 Assistant
+Tool Call 源顺序提交。并行上限由 `max_parallel_tool_calls` 控制。
 
 ### 3.3 事件、Streaming 与取消
 
@@ -340,7 +347,7 @@ CD 属于交付能力，不改变 Core Runtime 语义。
 | Steering | Queue + safe turn boundary | 有界 FIFO + Model-call Safe Point | 基础已具备 |
 | Follow-up | Agent outer loop queue | 独立 FIFO Run Chain + Waitable Handle | 基础已具备 |
 | Continue | `continue()` | 独立 Run + 无新增 User Message + Safe Point | 基础已具备 |
-| Parallel Tool Calls | 默认并行，可强制顺序 | 顺序执行 | 未实现 |
+| Parallel Tool Calls | 默认并行，可强制顺序 | Opt-in 只读并行 + 副作用屏障 | 基础已具备，更保守 |
 | Dynamic Tool Set | Runtime 可替换 | 构造/启动时为主 | 未实现 |
 | Cancellation | AbortSignal | CancellationToken | 已对齐 |
 | Tool Progress | `onUpdate` | `ToolProgressReporter` | 已具备 |
@@ -373,8 +380,8 @@ Context。SimAgentPlg 当前坚持：
 - Context 改写通过显式 `AgentContextBuilder`。
 - 自动压缩是 Orchestrator 的明确依赖，不通过 Event 回调重入 Agent。
 
-这个边界避免事件观察者意外改变运行，但也意味着尚缺一个独立于 Event 的行为扩展协议。
-后续不能简单把可变 Hook 塞进 `AgentEventSink`。
+这个边界避免事件观察者意外改变运行。需要在完整 Turn 后停止时使用独立的
+`BehaviorHook.after_turn`；后续扩展决策点也不应把可变 Hook 塞进 `AgentEventSink`。
 
 ### 5.2 Session Tree 模型
 
@@ -414,8 +421,14 @@ SimAgentPlg 当前只在完整 User Turn 边界切分，并让应用拥有 Summa
 ### 5.5 Tool 执行顺序
 
 Pi 当前默认并行执行允许并行的 Tool Call，同时保证最终 Tool Result 按 Assistant 源顺序
-写入 transcript；SimAgentPlg 全部顺序执行。顺序模型更容易保证副作用和事件顺序，但会
-降低多个独立只读 Tool 的吞吐。
+写入 transcript。SimAgentPlg 采用更保守的双重 opt-in：Handler 必须声明 `READ_ONLY`，Agent
+还必须开启并行策略。连续只读调用并发运行，但 `ToolCompleted` 与 Tool Message 在批次完成后
+按源顺序提交；副作用工具不会与相邻只读批次重叠。
+
+并行批次共享 Run Cancellation，每个 Progress 保留自己的 `tool_call_id`。普通异常转换为对应
+Tool Result；外部取消会补齐批次和后续未启动调用；并行批次中的 active peer 全部收尾后，按
+源顺序选择首个 COMPLETE / REJECT / CANCEL。`READ_ONLY` 是 Handler 与 Middleware 对并发安全
+作出的契约，Core 不尝试从名称或参数自动推断副作用。
 
 ## 6. 当前技术边界与风险
 
@@ -504,7 +517,7 @@ Adapter 的真实差异验证，例如 Thinking、Cache Usage、Tool Schema 和�
 
 ### 阶段六：工具调度与 Provider 扩展
 
-- Parallel Tool Calls 与 Side-effect Policy
+- Parallel Tool Calls 与 Side-effect Policy——已完成基础版
 - Dynamic Tool Set
 - Canonical Tool Definition
 - 第二个真实 Provider Adapter
@@ -524,24 +537,25 @@ CodeAgent
 
 ## 8. 下一步任务建议
 
-行为控制面第一批已经完成。下一步建议实现 **Parallel Tool Calls 与 Side-effect Policy**，
-提高独立只读工具的吞吐，同时继续保持有副作用工具的确定性和安全性。
+安全并行工具调度第一批已经完成。下一步建议实现 **Canonical Tool Definition**，把 Core
+公开接口从 OpenAI function-calling 字典中解耦，再用第二个真实 Provider Adapter 验证边界。
 
 ### 8.1 具体实现范围
 
-1. 为 Tool Definition 增加 Core 级执行属性，至少区分 `read_only` 与 `side_effecting`。
-2. 默认继续顺序执行；只有策略明确允许的只读 Tool Call 才能并行。
-3. 并行执行时，`ToolStarted` 可按源顺序发出，Tool Result 必须按 Assistant Tool Call 原顺序提交。
-4. 任一调用产生 COMPLETE / REJECT / CANCEL 时，明确剩余任务的取消和结果补齐语义。
-5. 并行任务共享 Run Cancellation，但每个 Tool Progress 仍绑定原始 `tool_call_id`。
-6. 第一版不做自动副作用推断，未标注工具一律按有副作用、顺序执行处理。
+1. 定义强类型、Provider-neutral 的 `ToolDefinition`：名称、描述、输入 Schema 与执行属性。
+2. 保留现有 OpenAI 字典输入的兼容适配层，给出明确的弃用迁移路径，不立即破坏 Handler。
+3. 由每个 Provider Adapter 把 Canonical Definition 转换为自身 Tool Schema。
+4. Tool Runtime 只依赖 Canonical Definition，不再解析 OpenAI `type/function/name` 结构做路由。
+5. 明确 JSON Schema 子集、Provider 不支持字段和序列化错误的处理方式。
+6. 用第二个真实 Provider Adapter 验证 Tool Call、Usage、Thinking、Cancellation 和错误映射差异。
 
 ### 8.2 验收标准
 
-- 默认配置下，现有 Tool 执行顺序和事件语义完全不变。
-- 多个允许并行的只读工具真实并发执行，但写入历史的 Tool Message 顺序稳定。
-- 有副作用或混合批次遵循显式策略，不发生隐式并行。
-- 并行失败、取消、Terminal Tool 和 Progress 均有确定性测试。
-- Session Recorder、Steering、Behavior Hook 和重复调用保护语义不发生变化。
+- 现有 `MethodToolHandler((OPENAI_TOOL_DICT,))` 在兼容期无需修改即可工作。
+- Core Context 与 Tool Runtime 不再读取 Provider 专属结构。
+- OpenAI Adapter 生成的请求 Schema 与当前行为等价。
+- 第二个 Adapter 不需要伪造 OpenAI Tool Definition 才能接入。
+- Canonical Definition 的重复名称、非法 Schema、Effect 与 Adapter 不兼容均有确定性测试。
 
-完成并行调度后，再抽取 Canonical Tool Definition，并用第二个真实 Provider Adapter 验证。
+完成 Canonical Definition 后，再决定先开放 Dynamic Tool Set，还是先补第二个 Provider 的完整
+Streaming 实现；优先顺序由实际集成需求决定。

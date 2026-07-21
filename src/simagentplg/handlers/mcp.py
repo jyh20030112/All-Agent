@@ -54,13 +54,18 @@ class McpToolHandler(BaseHandler):
         if self._started:
             return
         await self.manager.startup()
-        self._tools = tuple(self.manager.get_openai_tools())
-        unknown = self._tool_effects.keys() - set(self.tool_names)
-        if unknown:
-            names_text = ", ".join(sorted(unknown))
-            raise ToolDefinitionError(
-                f"tool effects reference unknown MCP tool(s): {names_text}"
-            )
+        try:
+            self._tools = tuple(self.manager.get_openai_tools())
+            unknown = self._tool_effects.keys() - set(self.tool_names)
+            if unknown:
+                names_text = ", ".join(sorted(unknown))
+                raise ToolDefinitionError(
+                    f"tool effects reference unknown MCP tool(s): {names_text}"
+                )
+        except Exception:
+            self._tools = ()
+            await self.manager.shutdown()
+            raise
         self._started = True
 
     async def shutdown(self) -> None:

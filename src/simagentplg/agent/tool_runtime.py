@@ -324,6 +324,14 @@ class ToolRuntime:
             await self.event_emitter.emit(ToolStarted(self.state.turn, tool_call))
         return True
 
+    def can_parallelize_tool_calls(
+        self,
+        tool_calls: Sequence[ModelToolCall],
+    ) -> bool:
+        """Return whether the full source group can reserve repetition state."""
+
+        return self._repetition_state_after(tool_calls) is not None
+
     async def complete_tool_call(
         self,
         tool_call: ModelToolCall,
@@ -331,9 +339,7 @@ class ToolRuntime:
     ) -> None:
         """Emit one completion at the scheduler's deterministic commit point."""
 
-        await self.event_emitter.emit(
-            ToolCompleted(self.state.turn, tool_call, result)
-        )
+        await self.event_emitter.emit(ToolCompleted(self.state.turn, tool_call, result))
 
     def tool_effect(self, tool_name: str) -> ToolEffect:
         """Return one route's declared effect, defaulting unknown calls to unsafe."""
@@ -428,6 +434,16 @@ class ToolRuntime:
     ) -> bool:
         """Atomically reserve source-ordered guard state or request fallback."""
 
+        next_state = self._repetition_state_after(tool_calls)
+        if next_state is None:
+            return False
+        self._last_tool_signature, self._repeated_tool_calls = next_state
+        return True
+
+    def _repetition_state_after(
+        self,
+        tool_calls: Sequence[ModelToolCall],
+    ) -> tuple[tuple[str, str] | None, int] | None:
         last_signature = self._last_tool_signature
         repeated_calls = self._repeated_tool_calls
         for tool_call in tool_calls:
@@ -441,11 +457,8 @@ class ToolRuntime:
                 last_signature = signature
                 repeated_calls = 1
             if repeated_calls >= self.max_repeated_tool_calls:
-                return False
-
-        self._last_tool_signature = last_signature
-        self._repeated_tool_calls = repeated_calls
-        return True
+                return None
+        return last_signature, repeated_calls
 
     @staticmethod
     def _tool_signature(

@@ -39,6 +39,7 @@ def main() -> None:
         "ModelAdapter",
         "OpenAIModelAdapter",
         "ToolMiddleware",
+        "ToolEffect",
         "McpToolHandler",
         "McpServerManager",
         "SkillManager",

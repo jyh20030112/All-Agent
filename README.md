@@ -271,6 +271,49 @@ exceptions become `RUNTIME_ERROR`; abort interrupts a slow Hook, and
 `wait_for_idle()` includes Hook backpressure. Hooks are not invoked after a Turn
 that already produced a terminal result.
 
+### Parallel read-only tools
+
+Parallel Tool Calls are opt-in at both the tool and Agent levels. A handler
+must explicitly declare a tool `READ_ONLY`, and the Runtime Policy must enable
+parallel calls:
+
+```python
+from simagentplg import RuntimePolicy, ToolEffect
+
+
+class LookupHandler(MethodToolHandler):
+    def __init__(self) -> None:
+        super().__init__(
+            (LOOKUP_TOOL,),
+            tool_effects={"lookup": ToolEffect.READ_ONLY},
+        )
+
+
+agent = BaseAgent(
+    model,
+    agent_id="parallel-lookups",
+    handlers=[LookupHandler()],
+    runtime_policy=RuntimePolicy(
+        parallel_tool_calls=True,
+        max_parallel_tool_calls=4,
+    ),
+)
+```
+
+The scheduler only parallelizes contiguous read-only calls. Unannotated,
+unknown, and `SIDE_EFFECTING` tools remain sequential and form barriers between
+read batches. The default policy is fully sequential, so existing handlers do
+not change behavior after upgrading.
+
+Within a parallel batch, `ToolStarted` is emitted in source order and Progress
+may interleave by `tool_call_id`. Handlers execute concurrently, but
+`ToolCompleted`, Agent history, and Session Tool Messages are committed in the
+Assistant Tool Call order. Errors remain ordinary Tool Results. External abort
+settles every active and pending call; if a read-only batch returns a terminal
+Tool Control, active peers settle before the first terminal decision in source
+order stops the Run. Declaring `READ_ONLY` is a concurrency-safety contract for
+the handler and its middleware, not an automatic side-effect inference.
+
 ### Streaming responses
 
 `BaseAgent.run()` still returns one final `AgentRunResult`, while provisional
@@ -516,6 +559,8 @@ policy = RuntimePolicy(
     max_repeated_tool_calls=3,
     max_run_tokens=None,
     require_explicit_finish=False,
+    parallel_tool_calls=False,
+    max_parallel_tool_calls=None,
 )
 ```
 
@@ -545,7 +590,12 @@ an async `do_add()` method:
 from collections.abc import Mapping
 from typing import Any
 
-from simagentplg import CancellationToken, MethodToolHandler, StepOutcome
+from simagentplg import (
+    CancellationToken,
+    MethodToolHandler,
+    StepOutcome,
+    ToolEffect,
+)
 
 ADD_TOOL = {
     "type": "function",
@@ -566,7 +616,10 @@ ADD_TOOL = {
 
 class MathHandler(MethodToolHandler):
     def __init__(self) -> None:
-        super().__init__((ADD_TOOL,))
+        super().__init__(
+            (ADD_TOOL,),
+            tool_effects={"add": ToolEffect.READ_ONLY},
+        )
 
     async def do_add(
         self,

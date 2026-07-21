@@ -14,6 +14,8 @@ class RuntimePolicy:
     max_parallel_tool_calls: int | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.parallel_tool_calls, bool):
+            raise TypeError("parallel_tool_calls must be a boolean")
         if self.max_steps <= 0:
             raise ValueError("max_steps must be greater than zero")
         if self.max_no_tool_responses <= 0:
@@ -22,8 +24,10 @@ class RuntimePolicy:
             raise ValueError("max_repeated_tool_calls must be greater than zero")
         if self.max_run_tokens is not None and self.max_run_tokens <= 0:
             raise ValueError("max_run_tokens must be greater than zero")
-        if (
-            self.max_parallel_tool_calls is not None
-            and self.max_parallel_tool_calls <= 0
-        ):
-            raise ValueError("max_parallel_tool_calls must be greater than zero")
+        if self.max_parallel_tool_calls is not None:
+            if isinstance(self.max_parallel_tool_calls, bool) or not isinstance(
+                self.max_parallel_tool_calls, int
+            ):
+                raise TypeError("max_parallel_tool_calls must be an integer")
+            if self.max_parallel_tool_calls <= 0:
+                raise ValueError("max_parallel_tool_calls must be greater than zero")

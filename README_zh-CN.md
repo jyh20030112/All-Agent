@@ -20,6 +20,10 @@ Middleware、MCP 和 Skill 等运行机制；Shell、文件编辑、Git、审批
 - 可组合的 `BaseHandler` 和 `MethodToolHandler` 工具协议
 - `ToolRuntime` 生命周期、路由、Middleware 和重复调用保护
 - 通用 `ToolMiddleware` 拦截机制
+- 类型化生命周期事件、Text / Thinking Streaming 和 Tool Progress
+- Run Cancellation、`abort()`、Steering Safe Point 与 `wait_for_idle()` 终态屏障
+- Follow-up Run Chain、Continue Safe Point 和 `after_turn` Behavior Hooks
+- 显式 Side-effect 属性与可选的只读 Tool Call 并行调度
 - Provider-neutral Token Usage 与单次 Run 预算保护
 - 上下文压力估算、独立窗口预算和非变异压缩准备
 - 通过可插拔 `Compactor`、标准 `SummaryEntry` 和 Session 快照提供显式可取消压缩
@@ -121,6 +125,131 @@ print(result.usage.complete)
 和 Session 中，但 `AgentContextBuilder` 会在构造 `llm_messages` 时移除，不会发送给
 Provider。`AgentRunResult.usage` 聚合一次 Run 的所有模型请求；`complete=False` 表示
 至少一次请求没有报告 Usage，不能把它当成零消耗。
+
+### 取消正在执行的 Run
+
+`abort()` 会取消当前模型请求、Compactor、Tool、Middleware、Behavior Hook 或 MCP 调用，
+而不等待 Agent 的串行操作锁：
+
+```python
+run = asyncio.create_task(agent.run(task="执行一个较长任务"))
+agent.abort("用户停止")
+result = await run
+```
+
+取消返回结构化 `AgentRunResult`。`wait_for_idle()` 会一直等待到 `AgentFinished` 和全部同步
+Event Sink 完成，之后同一个 Agent 可以安全复用。
+
+### Steering 当前 Run
+
+`steer()` 可以为正在执行的 Run 提交有界 FIFO 控制输入：
+
+```python
+receipt = agent.steer("优先检查配置文件，不要修改代码")
+print(receipt.status)
+```
+
+Steering 不会中断已经开始的模型响应或 Tool Call。Core 会在下一次 Provider Context 最终
+确定前的安全点按顺序应用输入，并发布 `SteeringApplied`；Run 提前结束时，未消费输入会
+发布 `SteeringDiscarded`。回执明确区分已接受、Agent 空闲、队列已满和 Run 正在收尾。
+
+### Follow-up Run Chain
+
+`follow_up()` 把独立任务加入当前 Run Chain，并返回可等待的 Handle：
+
+```python
+handle = agent.follow_up("根据刚才的结果生成测试计划")
+result = await handle.wait()
+```
+
+每个 Follow-up 都有独立的 `run_id`、事件序列和 Session Run，并等待前一个 Run 的
+`AgentFinished` 及 Event Sink 完成。Queue 是进程内有界 FIFO，不伪装成持久任务系统；
+失败后的丢弃或继续由 `FollowUpFailurePolicy` 显式控制。
+
+### Continue 已有历史
+
+`continue_run()` 从已提交历史启动新的 Run，但不会追加新的 User Message：
+
+```python
+if agent.can_continue:
+    result = await agent.continue_run()
+else:
+    print(agent.continue_rejection_reason)
+```
+
+Continue 分配新的 `run_id`、发布 `AgentContinued`，并通过 `SessionRunIntent.CONTINUE`
+持久化。只有显式安全的终态和完整 Tool Result 历史可以 Continue；其他情况会抛出带类型化
+原因的 `ContinueRejectedError`。
+
+### Behavior Hooks
+
+`BehaviorHook.after_turn()` 决定一个非终态完整 Turn 是否允许进入下一次 Provider 请求：
+
+```python
+from simagentplg import BehaviorDecision
+
+
+class StopAfterFirstToolTurn:
+    async def after_turn(self, snapshot, *, cancellation):
+        if snapshot.turn >= 1:
+            return BehaviorDecision.stop("在完整 Turn 边界暂停")
+        return None
+
+
+agent = BaseAgent(
+    model,
+    agent_id="controlled-agent",
+    behavior_hooks=[StopAfterFirstToolTurn()],
+)
+```
+
+决策点位于所有 Tool Result 和 `TurnCompleted` 提交之后、下一次 `TurnStarted` 之前。Hook
+接收隔离的 `TurnSnapshot`，不能修改 `AgentState`；多个 Hook 按声明顺序执行，首个 STOP
+短路后续 Hook，并以 `StopReason.BEHAVIOR_STOP` 完成 Run。该终态可以显式 Continue。
+
+### 并行只读工具
+
+并行 Tool Call 需要工具和 Agent 两侧同时显式开启：Handler 必须把工具声明为
+`ToolEffect.READ_ONLY`，Runtime Policy 也必须允许并行：
+
+```python
+from simagentplg import RuntimePolicy, ToolEffect
+
+
+class LookupHandler(MethodToolHandler):
+    def __init__(self) -> None:
+        super().__init__(
+            (LOOKUP_TOOL,),
+            tool_effects={"lookup": ToolEffect.READ_ONLY},
+        )
+
+
+agent = BaseAgent(
+    model,
+    agent_id="parallel-lookups",
+    handlers=[LookupHandler()],
+    runtime_policy=RuntimePolicy(
+        parallel_tool_calls=True,
+        max_parallel_tool_calls=4,
+    ),
+)
+```
+
+调度器只并行连续的只读调用。未标注、未知和 `SIDE_EFFECTING` 工具保持顺序执行，并在只读
+批次之间形成屏障；默认策略仍是完全串行，因此升级不会改变现有 Handler 行为。
+
+并行批次的 `ToolStarted` 按源顺序发布，Progress 可以按 `tool_call_id` 交错。Handler 可以
+并发完成，但 `ToolCompleted`、Agent History 和 Session Tool Message 始终按 Assistant
+Tool Call 的原始顺序提交。外部取消会补齐活动和待执行调用；出现终态 Tool Control 时，
+活动 peer 先安全收尾，再由源顺序中的首个终态结果停止 Run。`READ_ONLY` 是 Handler 及其
+Middleware 作出的并发安全契约，Core 不会自动推断副作用。
+
+### 流式模型响应
+
+`BaseAgent.run()` 仍只返回最终 `AgentRunResult`；临时文本和推理片段通过
+`AssistantTextDelta`、`AssistantThinkingDelta` 事件观察。Provider Adapter 负责组装完整
+Tool Call，只有完整 `AssistantMessage` 才会进入 Agent State。Delta 不写入 Session，
+只实现 `complete()` 的现有 Adapter 仍可通过默认 `stream()` 回退工作。
 
 ## 上下文压力与压缩准备
 
@@ -275,9 +404,14 @@ Session ID 会映射为哈希文件名。每一行先完整编码，再通过一
 中断产生的不完整尾行会在读取时忽略，并在下一次追加前修复。已经换行的损坏 JSON 或
 未知 Journal Schema 会抛出 `SessionSerializationError`，不会被误认为 Session 不存在。
 
+`JsonlSessionStorage` 使用稳定的 `.jsonl.lock` Sidecar，把进程内协调和 POSIX Advisory
+Lock 组合在同一个 read-validate-append 事务中。不同 Storage 实例和不同进程不会分配重复
+Revision 或静默覆盖 Branch Head；过期 Head 返回 `SessionConflictError`，锁超时返回
+`SessionLockTimeoutError`。锁等待在线程中执行，不阻塞 Event Loop。
+
 `restore_session()` 会校验 Agent 身份，并拒绝包含未完成 Run 的 Session。Core 不会重放
-中断的 Tool Call，因为它可能已经产生外部副作用。不同进程可以读取已完成快照，但文件
-实现暂不协调同一 Session 的多进程并发写入。
+中断的 Tool Call，因为它可能已经产生外部副作用。文件锁契约面向本地 POSIX 文件系统；
+网络文件系统需要验证其 Advisory Lock 语义，或提供其他 `SessionTreeStorage` Backend。
 
 ## RuntimePolicy
 
@@ -292,8 +426,13 @@ policy = RuntimePolicy(
     max_repeated_tool_calls=3,
     max_run_tokens=None,
     require_explicit_finish=False,
+    parallel_tool_calls=False,
+    max_parallel_tool_calls=None,
 )
 ```
+
+`parallel_tool_calls` 默认关闭；开启后也只并行显式声明为 `READ_ONLY` 的工具。
+`max_parallel_tool_calls` 可以限制每个只读批次的并发量。
 
 可选的 `max_run_tokens` 在轮次边界阻止下一次模型请求。当前响应及其请求的工具会先完整
 收尾；达到预算时返回 `TOKEN_BUDGET_EXCEEDED`，需要继续但 Provider 未报告 Usage 时
@@ -317,7 +456,7 @@ policy = RuntimePolicy(require_explicit_finish=True)
 from collections.abc import Mapping
 from typing import Any
 
-from simagentplg import MethodToolHandler, StepOutcome
+from simagentplg import MethodToolHandler, StepOutcome, ToolEffect
 
 ADD_TOOL = {
     "type": "function",
@@ -338,7 +477,10 @@ ADD_TOOL = {
 
 class MathHandler(MethodToolHandler):
     def __init__(self) -> None:
-        super().__init__((ADD_TOOL,))
+        super().__init__(
+            (ADD_TOOL,),
+            tool_effects={"add": ToolEffect.READ_ONLY},
+        )
 
     async def do_add(self, arguments: Mapping[str, Any]) -> StepOutcome:
         return StepOutcome(
@@ -483,6 +625,8 @@ Orchestration + State + Context + Runtime Policy + Run Result
 + Lifecycle Events + Session + Streaming + Tool Progress + Usage Budget
 + Context Pressure + Compaction Preparation
 + Model Compactor + Summary Entry + Durable Session Journal + Session Tree
++ Cancellation + Steering + Follow-up + Continue + Behavior Hooks
++ Parallel Read-only Tool Scheduler + Side-effect Barrier
 ```
 
 派生 Agent 负责具体能力与策略：
@@ -554,14 +698,16 @@ git push origin v0.5.0
 
 包根目录导出：
 
-- Agent：`BaseAgent`、`AgentOrchestrator`、`AgentState`、`AgentStatus`
+- Agent：`BaseAgent`、`AgentOrchestrator`、`AgentState`、`AgentStatus`、`BehaviorHook`、`BehaviorDecision`、`BehaviorAction`、`TurnSnapshot`
 - Provider：`ModelAdapter`、`OpenAIModelAdapter`、`ModelConfig`、`AssistantMessage`、`ModelToolCall`、`ModelUsage`、`ModelErrorKind`、`ModelProviderError`、`ContextOverflowError`、`ModelRateLimitError`、`ModelTimeoutError`、`ModelAuthenticationError`
 - Runtime：`RuntimePolicy`、`AgentRunResult`、`RunUsage`、`AgentRunError`、`RunStatus`、`StopReason`
-- Session：`AgentSession`、`SessionRecorder`、`SessionStorage`、`SessionJournalStorage`、`MemorySessionStorage`、`JsonlSessionStorage`、`SessionCompaction`、`SessionRecord`、`SessionRecordDraft`、`SessionRecordKind`、`SessionBranchIntent`、`SessionBranch`、`SessionCheckout`、`SessionRetry`、`DEFAULT_SESSION_BRANCH`、`SESSION_SCHEMA_VERSION`、`SESSION_JOURNAL_SCHEMA_VERSION`、`session_to_dict`、`session_from_dict`、`SessionError`、`SessionSerializationError`、`SessionStorageError`、`SessionConflictError`
+- 控制面：`ControlInput`、`ControlReceipt`、`ControlStatus`、`FollowUpHandle`、`FollowUpFailurePolicy`、`ContinueRejectedError`、`ContinueRejectedReason`
+- Session：`AgentSession`、`SessionRecorder`、`SessionStorage`、`SessionJournalStorage`、`SessionTreeStorage`、`MemorySessionStorage`、`JsonlSessionStorage`、`SessionRunIntent`、`SessionCompaction`、`SessionRecord`、`SessionRecordDraft`、`SessionRecordKind`、`SessionBranchIntent`、`SessionBranch`、`SessionCheckout`、`SessionRetry`、`DEFAULT_SESSION_BRANCH`、`SESSION_SCHEMA_VERSION`、`SESSION_JOURNAL_SCHEMA_VERSION`、`session_to_dict`、`session_from_dict`、`SessionError`、`SessionSerializationError`、`SessionStorageError`、`SessionConflictError`、`SessionLockTimeoutError`
 - Context：`AgentContextBuilder`、`ContextBuildResult`、`ContextBudget`、`ContextUsageEstimate`、`CompactionPolicy`、`AutoCompactionPolicy`、`CompactionDecision`、`CompactionPreparation`、`MessageTokenEstimator`
 - Compaction：`CompactionRuntime`、`Compactor`、`ModelCompactor`、`CompactionContextBuilder`、`CompactorOutput`、`CompactionRequest`、`CompactionResult`、`CompactionStatus`、`CompactionTrigger`、`SummaryEntry`
-- Tool：`StepOutcome`、`ToolControl`、`BaseHandler`、`MethodToolHandler`、`McpToolHandler`
+- Tool：`StepOutcome`、`ToolControl`、`ToolEffect`、`ToolProgressReporter`、`ToolProgressUpdate`、`BaseHandler`、`MethodToolHandler`、`McpToolHandler`
 - Middleware：`Middleware`、`ToolMiddleware`、`ToolCallContext`、`ToolNext`
+- Event：`AgentEvent`、`AgentEventSink`、`AgentStarted`、`AgentContinued`、`TurnStarted`、`MessageCompleted`、`ToolStarted`、`ToolProgressed`、`ToolCompleted`、`TurnCompleted`、`AgentFinished`
 - 扩展：`McpServerManager`、`SkillManager`
 
 ## License

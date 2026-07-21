@@ -685,6 +685,11 @@ class AgentOrchestrator:
         """Run safe calls concurrently while committing results in source order."""
 
         result_messages: list[dict[str, Any]] = []
+        if not self.tool_runtime.can_parallelize_tool_calls(tool_calls):
+            return await self._execute_sequential_tool_calls(
+                tool_calls,
+                cancellation,
+            )
         limit = self.policy.max_parallel_tool_calls or len(tool_calls)
         offset = 0
         while offset < len(tool_calls):
@@ -715,9 +720,7 @@ class AgentOrchestrator:
             cancelled = next((result for result in results if result.cancelled), None)
             if cancelled is not None:
                 reason = (
-                    cancelled.error
-                    or cancellation.reason
-                    or "agent run was aborted"
+                    cancelled.error or cancellation.reason or "agent run was aborted"
                 )
                 for pending_call in tool_calls[offset + len(batch) :]:
                     pending_result = await self.tool_runtime.cancel_tool_call(
