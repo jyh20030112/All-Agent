@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from uuid import uuid4
 
-from simagentplg.agent.result import AgentRunResult
+from simagentplg.agent.result import AgentRunResult, StopReason
+from simagentplg.agent.types import AgentMessage
 
 
 class ControlInputKind(StrEnum):
@@ -37,6 +39,71 @@ class FollowUpDiscardReason(StrEnum):
 
     PREVIOUS_RUN_NOT_COMPLETED = "previous_run_not_completed"
     AGENT_SHUTDOWN = "agent_shutdown"
+
+
+class ContinueRejectedReason(StrEnum):
+    """Reason a Continue Run could not start."""
+
+    AGENT_ACTIVE = "agent_active"
+    AGENT_SHUTTING_DOWN = "agent_shutting_down"
+    NO_PREVIOUS_RUN = "no_previous_run"
+    UNSUPPORTED_STOP_REASON = "unsupported_stop_reason"
+    INCOMPLETE_TOOL_STATE = "incomplete_tool_state"
+
+
+class ContinueRejectedError(RuntimeError):
+    """A Continue request was rejected before allocating a Run."""
+
+    def __init__(self, reason: ContinueRejectedReason) -> None:
+        self.reason = reason
+        super().__init__(f"continue run was rejected: {reason.value}")
+
+
+_CONTINUABLE_STOP_REASONS = frozenset(
+    {
+        StopReason.TEXT_RESPONSE,
+        StopReason.TOOL_COMPLETION,
+        StopReason.EMPTY_RESPONSE,
+        StopReason.MAX_STEPS,
+        StopReason.MAX_NO_TOOL_RESPONSES,
+        StopReason.TOKEN_BUDGET_EXCEEDED,
+        StopReason.USAGE_UNAVAILABLE,
+    }
+)
+
+
+def _continue_history_rejection_reason(
+    messages: Sequence[AgentMessage],
+    result: AgentRunResult | None,
+) -> ContinueRejectedReason | None:
+    if result is None:
+        return ContinueRejectedReason.NO_PREVIOUS_RUN
+    if result.stop_reason not in _CONTINUABLE_STOP_REASONS:
+        return ContinueRejectedReason.UNSUPPORTED_STOP_REASON
+
+    pending: set[str] = set()
+    for message in messages:
+        role = message.get("role")
+        if role == "assistant":
+            tool_calls = message.get("tool_calls")
+            if tool_calls is None:
+                continue
+            if not isinstance(tool_calls, list):
+                return ContinueRejectedReason.INCOMPLETE_TOOL_STATE
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, Mapping):
+                    return ContinueRejectedReason.INCOMPLETE_TOOL_STATE
+                tool_call_id = tool_call.get("id")
+                if not isinstance(tool_call_id, str) or not tool_call_id:
+                    return ContinueRejectedReason.INCOMPLETE_TOOL_STATE
+                pending.add(tool_call_id)
+        elif role == "tool":
+            tool_call_id = message.get("tool_call_id")
+            if isinstance(tool_call_id, str):
+                pending.discard(tool_call_id)
+    if pending:
+        return ContinueRejectedReason.INCOMPLETE_TOOL_STATE
+    return None
 
 
 @dataclass(frozen=True, slots=True)

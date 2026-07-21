@@ -38,12 +38,14 @@ from simagentplg.session.types import (
     SessionCompaction,
     SessionMessage,
     SessionRun,
+    SessionRunIntent,
 )
 
 __all__ = [
     "AgentSession",
     "SessionMessage",
     "SessionRun",
+    "SessionRunIntent",
     "SessionCompaction",
     "SessionStorage",
     "SessionJournalStorage",

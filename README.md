@@ -210,6 +210,31 @@ Pending Follow-ups remain process-local. `SessionRecorder` writes `run_started`
 only when a Follow-up actually begins, so the queue is not presented as a
 durable job system.
 
+### Continue existing history
+
+`continue_run()` starts a distinct Run from committed history without appending
+another User message:
+
+```python
+if agent.can_continue:
+    result = await agent.continue_run()
+else:
+    print(agent.continue_rejection_reason)
+```
+
+Continue allocates a new `run_id`, emits `AgentContinued`, and is persisted as
+`run_continued`. Session Runs expose `SessionRunIntent.TASK` or
+`SessionRunIntent.CONTINUE`, with `task=None` for Continue. Restoring a finished
+Session also restores the latest terminal result, so a new Agent instance can
+continue the checked-out history.
+
+Only explicit safe terminal reasons are continuable. Active Agents, Shutdown,
+missing previous Runs, unsupported failure/cancellation reasons, and unmatched
+Tool Calls raise `ContinueRejectedError` with a typed
+`ContinueRejectedReason`. Continue reuses Cancellation, Steering safe points,
+Follow-up chaining, automatic Compaction, terminal Event Sink barriers, and
+`wait_for_idle()` semantics.
+
 ### Streaming responses
 
 `BaseAgent.run()` still returns one final `AgentRunResult`, while provisional
@@ -755,9 +780,9 @@ The package root exports:
 - Providers: `ModelAdapter`, `OpenAIModelAdapter`, `ModelConfig`, `AssistantMessage`, `ModelToolCall`, `ModelUsage`, `ModelStreamEvent`, `ModelTextDelta`, `ModelThinkingDelta`, `ModelResponseCompleted`, `ModelErrorKind`, `ModelProviderError`, `ContextOverflowError`, `ModelRateLimitError`, `ModelTimeoutError`, `ModelAuthenticationError`
 - Runtime: `RuntimePolicy`, `AgentRunResult`, `RunUsage`, `AgentRunError`, `RunStatus`, `StopReason`
 - Cancellation: `CancellationToken`, `CancellationSource`, `AgentCancelledError`
-- Events: `AgentEvent`, `AgentEventSink`, `CompositeAgentEventSink`, `AssistantTextDelta`, `AssistantThinkingDelta`, `ToolProgressed`, `SteeringApplied`, `SteeringDiscarded`, `ContextPressureEvaluated`, `CompactionStarted`, `CompactionCompleted`, `CompactionFailed`
-- Control: `ControlInputKind`, `ControlStatus`, `ControlInput`, `ControlReceipt`, `FollowUpFailurePolicy`, `FollowUpDiscardReason`, `FollowUpHandle`, `FollowUpError`, `FollowUpRejectedError`, `FollowUpDiscardedError`
-- Session: `AgentSession`, `SessionRecorder`, `SessionStorage`, `SessionJournalStorage`, `SessionTreeStorage`, `MemorySessionStorage`, `JsonlSessionStorage`, `SessionCompaction`, `SessionRecord`, `SessionRecordDraft`, `SessionRecordKind`, `SessionBranchIntent`, `SessionBranch`, `SessionCheckout`, `SessionRetry`, `DEFAULT_SESSION_BRANCH`, `SESSION_SCHEMA_VERSION`, `SESSION_JOURNAL_SCHEMA_VERSION`, `session_to_dict`, `session_from_dict`, `SessionError`, `SessionSerializationError`, `SessionStorageError`, `SessionConflictError`, `SessionLockTimeoutError`
+- Events: `AgentEvent`, `AgentEventSink`, `CompositeAgentEventSink`, `AgentContinued`, `AssistantTextDelta`, `AssistantThinkingDelta`, `ToolProgressed`, `SteeringApplied`, `SteeringDiscarded`, `ContextPressureEvaluated`, `CompactionStarted`, `CompactionCompleted`, `CompactionFailed`
+- Control: `ControlInputKind`, `ControlStatus`, `ControlInput`, `ControlReceipt`, `ContinueRejectedReason`, `ContinueRejectedError`, `FollowUpFailurePolicy`, `FollowUpDiscardReason`, `FollowUpHandle`, `FollowUpError`, `FollowUpRejectedError`, `FollowUpDiscardedError`
+- Session: `AgentSession`, `SessionRun`, `SessionRunIntent`, `SessionRecorder`, `SessionStorage`, `SessionJournalStorage`, `SessionTreeStorage`, `MemorySessionStorage`, `JsonlSessionStorage`, `SessionCompaction`, `SessionRecord`, `SessionRecordDraft`, `SessionRecordKind`, `SessionBranchIntent`, `SessionBranch`, `SessionCheckout`, `SessionRetry`, `DEFAULT_SESSION_BRANCH`, `SESSION_SCHEMA_VERSION`, `SESSION_JOURNAL_SCHEMA_VERSION`, `session_to_dict`, `session_from_dict`, `SessionError`, `SessionSerializationError`, `SessionStorageError`, `SessionConflictError`, `SessionLockTimeoutError`
 - Context: `AgentContextBuilder`, `ContextBuildResult`, `ContextBudget`, `ContextUsageEstimate`, `CompactionPolicy`, `AutoCompactionPolicy`, `CompactionDecision`, `CompactionPreparation`, `MessageTokenEstimator`, `estimate_context_usage`, `prepare_compaction`
 - Compaction: `CompactionRuntime`, `Compactor`, `ModelCompactor`, `CompactionContextBuilder`, `CompactorOutput`, `CompactionRequest`, `CompactionResult`, `CompactionStatus`, `CompactionTrigger`, `SummaryEntry`
 - Tools: `StepOutcome`, `ToolControl`, `ToolProgressUpdate`, `ToolProgressReporter`, `BaseHandler`, `MethodToolHandler`, `McpToolHandler`

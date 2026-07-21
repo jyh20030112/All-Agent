@@ -1,6 +1,7 @@
 import asyncio
 
 from simagentplg.agent.events import (
+    AgentContinued,
     AgentEvent,
     AgentFinished,
     AgentStarted,
@@ -16,6 +17,7 @@ from simagentplg.session.types import AgentSession
 
 _RECORDED_PAYLOADS = (
     AgentStarted,
+    AgentContinued,
     MessageCompleted,
     SteeringApplied,
     ToolCompleted,
@@ -83,6 +85,15 @@ class SessionRecorder:
                     sequence=event.sequence,
                     run_id=event.run_id,
                     task=payload.task,
+                    branch_id=self.branch_id,
+                )
+            elif isinstance(payload, AgentContinued):
+                session.begin_continue(event.run_id, event.sequence)
+                draft = SessionRecordDraft.run_continued(
+                    session_id=self.session_id,
+                    agent_id=event.agent_id,
+                    sequence=event.sequence,
+                    run_id=event.run_id,
                     branch_id=self.branch_id,
                 )
             elif isinstance(payload, SteeringApplied):

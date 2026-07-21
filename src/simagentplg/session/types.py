@@ -2,10 +2,18 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
+from enum import StrEnum
 
 from simagentplg.agent.compaction import SummaryEntry
 from simagentplg.agent.result import AgentRunResult
 from simagentplg.agent.types import AgentMessage
+
+
+class SessionRunIntent(StrEnum):
+    """Why one Session Run entered the agent runtime."""
+
+    TASK = "task"
+    CONTINUE = "continue"
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,8 +37,9 @@ class SessionRun:
     """Persistent boundary and terminal result for one agent run."""
 
     run_id: str
-    task: str
+    task: str | None
     start_sequence: int
+    intent: SessionRunIntent = SessionRunIntent.TASK
     finish_sequence: int | None = None
     result: AgentRunResult | None = None
 
@@ -39,6 +48,13 @@ class SessionRun:
             raise ValueError("run_id must not be empty")
         if self.start_sequence <= 0:
             raise ValueError("start_sequence must be greater than zero")
+        if not isinstance(self.intent, SessionRunIntent):
+            raise TypeError("intent must be a SessionRunIntent")
+        if self.intent is SessionRunIntent.TASK:
+            if self.task is None:
+                raise ValueError("task Run requires a task")
+        elif self.task is not None:
+            raise ValueError("Continue Run must not contain a task")
         if (self.finish_sequence is None) != (self.result is None):
             raise ValueError("finish_sequence and result must be set together")
         if (
@@ -157,12 +173,29 @@ class AgentSession:
             run_id=run_id,
             task=task,
             start_sequence=sequence,
+            intent=SessionRunIntent.TASK,
         )
         self.runs.append(run)
         self.append_message(
             run_id,
             sequence,
             {"role": "user", "content": task},
+        )
+
+    def begin_continue(self, run_id: str, sequence: int) -> None:
+        """Open one Continue Run without appending a user message."""
+
+        if any(run.run_id == run_id for run in self.runs):
+            raise ValueError(f"run {run_id!r} already exists")
+        if any(not run.finished for run in self.runs):
+            raise ValueError("session already has an unfinished run")
+        self.runs.append(
+            SessionRun(
+                run_id=run_id,
+                task=None,
+                start_sequence=sequence,
+                intent=SessionRunIntent.CONTINUE,
+            )
         )
 
     def append_message(

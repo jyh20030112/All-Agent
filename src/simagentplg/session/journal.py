@@ -28,6 +28,7 @@ class SessionRecordKind(StrEnum):
     CHECKPOINT = "checkpoint"
     BRANCH_CREATED = "branch_created"
     RUN_STARTED = "run_started"
+    RUN_CONTINUED = "run_continued"
     MESSAGE_APPENDED = "message_appended"
     MESSAGES_APPENDED = "messages_appended"
     STEERING_APPLIED = "steering_applied"
@@ -112,6 +113,25 @@ class SessionRecordDraft:
             sequence=sequence,
             kind=SessionRecordKind.RUN_STARTED,
             data={"run_id": run_id, "task": task},
+            branch_id=branch_id,
+        )
+
+    @classmethod
+    def run_continued(
+        cls,
+        *,
+        session_id: str,
+        agent_id: str,
+        sequence: int,
+        run_id: str,
+        branch_id: str = DEFAULT_SESSION_BRANCH,
+    ) -> SessionRecordDraft:
+        return cls(
+            session_id=session_id,
+            agent_id=agent_id,
+            sequence=sequence,
+            kind=SessionRecordKind.RUN_CONTINUED,
+            data={"run_id": run_id},
             branch_id=branch_id,
         )
 
@@ -356,6 +376,11 @@ def apply_session_record(
         active.begin_run(
             _data_string(record, "run_id"),
             _data_string(record, "task"),
+            record.sequence,
+        )
+    elif record.kind is SessionRecordKind.RUN_CONTINUED:
+        active.begin_continue(
+            _data_string(record, "run_id"),
             record.sequence,
         )
     elif record.kind is SessionRecordKind.MESSAGE_APPENDED:

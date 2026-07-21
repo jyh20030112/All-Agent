@@ -32,6 +32,8 @@ from simagentplg.agent.context_management import (
     prepare_compaction,
 )
 from simagentplg.agent.control import (
+    ContinueRejectedError,
+    ContinueRejectedReason,
     ControlInput,
     ControlInputKind,
     ControlReceipt,
@@ -44,6 +46,7 @@ from simagentplg.agent.control import (
     FollowUpRejectedError,
 )
 from simagentplg.agent.events import (
+    AgentContinued,
     AgentEvent,
     AgentEventKind,
     AgentEventPayload,
@@ -129,6 +132,8 @@ __all__ = [
     "estimate_context_usage",
     "prepare_compaction",
     "ControlInputKind",
+    "ContinueRejectedReason",
+    "ContinueRejectedError",
     "ControlStatus",
     "ControlInput",
     "ControlReceipt",
@@ -149,6 +154,7 @@ __all__ = [
     "CompactionFailed",
     "ContextPressureEvaluated",
     "AgentStarted",
+    "AgentContinued",
     "AssistantThinkingDelta",
     "AssistantTextDelta",
     "TurnStarted",

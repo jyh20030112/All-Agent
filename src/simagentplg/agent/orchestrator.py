@@ -27,8 +27,13 @@ from simagentplg.agent.context_management import (
     MessageTokenEstimator,
     estimate_context_usage,
 )
-from simagentplg.agent.control import _SteeringQueue
+from simagentplg.agent.control import (
+    ContinueRejectedError,
+    _continue_history_rejection_reason,
+    _SteeringQueue,
+)
 from simagentplg.agent.events import (
+    AgentContinued,
     AgentEventEmitter,
     AgentFinished,
     AgentStarted,
@@ -133,14 +138,53 @@ class AgentOrchestrator:
     ) -> AgentRunResult:
         """Run one task and return its structured terminal result."""
 
+        return await self._run(
+            task=task,
+            cancellation=cancellation,
+            steering=steering,
+        )
+
+    async def continue_run(
+        self,
+        *,
+        cancellation: CancellationToken | None = None,
+        steering: _SteeringQueue | None = None,
+    ) -> AgentRunResult:
+        """Resume existing history in a distinct Run without a user message."""
+
+        reason = _continue_history_rejection_reason(
+            self.state.messages,
+            self.state.last_run_result,
+        )
+        if reason is not None:
+            raise ContinueRejectedError(reason)
+        return await self._run(
+            task=None,
+            cancellation=cancellation,
+            steering=steering,
+        )
+
+    async def _run(
+        self,
+        *,
+        task: str | None,
+        cancellation: CancellationToken | None,
+        steering: _SteeringQueue | None,
+    ) -> AgentRunResult:
+        """Execute one task or Continue Run through the shared lifecycle."""
+
         token = cancellation or CancellationSource().token
         self._usage = UsageAccumulator()
         run_id = self.event_emitter.begin_run()
         try:
             caller_cancellation: asyncio.CancelledError | None = None
             try:
-                self.state.begin_task(task)
-                await self.event_emitter.emit(AgentStarted(task))
+                if task is None:
+                    self.state.begin_continue()
+                    await self.event_emitter.emit(AgentContinued())
+                else:
+                    self.state.begin_task(task)
+                    await self.event_emitter.emit(AgentStarted(task))
                 await token.run(self._prepare_task())
                 result = await self._run_loop(token, steering)
             except AgentCancelledError as exc:
@@ -601,6 +645,7 @@ class AgentOrchestrator:
         )
 
     def _commit_result(self, result: AgentRunResult) -> None:
+        self.state.last_run_result = result
         if result.status is RunStatus.COMPLETED:
             self.state.complete(result.output or "")
         elif result.status is RunStatus.REJECTED:

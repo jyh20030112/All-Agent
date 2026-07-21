@@ -21,12 +21,15 @@ from simagentplg.agent.context_management import (
     MessageTokenEstimator,
 )
 from simagentplg.agent.control import (
+    ContinueRejectedError,
+    ContinueRejectedReason,
     ControlInput,
     ControlReceipt,
     ControlStatus,
     FollowUpDiscardReason,
     FollowUpFailurePolicy,
     FollowUpHandle,
+    _continue_history_rejection_reason,
     _FollowUpQueue,
     _SteeringQueue,
 )
@@ -223,6 +226,25 @@ class BaseAgent:
 
         return self._follow_ups.size
 
+    @property
+    def continue_rejection_reason(self) -> ContinueRejectedReason | None:
+        """Return why Continue is currently unavailable, if any."""
+
+        if self._shutting_down:
+            return ContinueRejectedReason.AGENT_SHUTTING_DOWN
+        if self._pending_operations or not self._run_chain_gate.is_set():
+            return ContinueRejectedReason.AGENT_ACTIVE
+        return _continue_history_rejection_reason(
+            self.state.messages,
+            self.state.last_run_result,
+        )
+
+    @property
+    def can_continue(self) -> bool:
+        """Return whether a Continue Run could be started now."""
+
+        return self.continue_rejection_reason is None
+
     def reset(
         self,
         history: Sequence[Mapping[str, Any]] | None = None,
@@ -261,6 +283,8 @@ class BaseAgent:
                 + ", ".join(unfinished)
             )
         self.reset(snapshot.messages)
+        if snapshot.runs:
+            self.state.last_run_result = snapshot.runs[-1].result
 
     async def startup(self) -> None:
         """Start the model adapter, handlers, and middleware resources."""
@@ -380,6 +404,37 @@ class BaseAgent:
             if chain_claimed:
                 self._finish_run_chain(result)
 
+    async def continue_run(self) -> AgentRunResult:
+        """Resume existing history in a new Run without adding a user message."""
+
+        reason = self.continue_rejection_reason
+        if reason is not None:
+            raise ContinueRejectedError(reason)
+        if not await self._try_claim_run_chain():
+            raise ContinueRejectedError(ContinueRejectedReason.AGENT_ACTIVE)
+
+        tracked = False
+        result: AgentRunResult | None = None
+        try:
+            reason = _continue_history_rejection_reason(
+                self.state.messages,
+                self.state.last_run_result,
+            )
+            if reason is not None:
+                raise ContinueRejectedError(reason)
+            self._track_operation()
+            tracked = True
+            self._follow_up_chain_open = True
+            async with self._operation_lock:
+                result = await self._continue_task()
+                return result
+        finally:
+            if tracked:
+                self._settle_operation()
+                self._finish_run_chain(result)
+            else:
+                self._release_run_chain()
+
     async def compact(
         self,
         *,
@@ -432,6 +487,22 @@ class BaseAgent:
             if self._active_operation is active_operation:
                 self._active_operation = None
 
+    async def _continue_task(self) -> AgentRunResult:
+        source = CancellationSource()
+        steering = _SteeringQueue(self.steering_queue_capacity)
+        active_operation = _ActiveOperation(source, steering)
+        self._active_operation = active_operation
+        try:
+            await self._startup()
+            return await self.orchestrator.continue_run(
+                cancellation=source.token,
+                steering=steering,
+            )
+        finally:
+            steering.close()
+            if self._active_operation is active_operation:
+                self._active_operation = None
+
     async def _claim_run_chain(self) -> None:
         while True:
             await self._run_chain_gate.wait()
@@ -439,6 +510,13 @@ class BaseAgent:
                 if self._run_chain_gate.is_set():
                     self._run_chain_gate.clear()
                     return
+
+    async def _try_claim_run_chain(self) -> bool:
+        async with self._run_chain_claim_lock:
+            if not self._run_chain_gate.is_set():
+                return False
+            self._run_chain_gate.clear()
+            return True
 
     def _release_run_chain(self) -> None:
         self._follow_up_chain_open = False

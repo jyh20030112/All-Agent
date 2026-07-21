@@ -32,6 +32,8 @@ from simagentplg.agent.context_management import (
     prepare_compaction,
 )
 from simagentplg.agent.control import (
+    ContinueRejectedError,
+    ContinueRejectedReason,
     ControlInput,
     ControlInputKind,
     ControlReceipt,
@@ -44,6 +46,7 @@ from simagentplg.agent.control import (
     FollowUpRejectedError,
 )
 from simagentplg.agent.events import (
+    AgentContinued,
     AgentEvent,
     AgentEventKind,
     AgentEventPayload,
@@ -145,6 +148,7 @@ from simagentplg.session import (
     SessionRecordKind,
     SessionRetry,
     SessionRun,
+    SessionRunIntent,
     SessionSerializationError,
     SessionStorage,
     SessionStorageError,
@@ -166,6 +170,8 @@ __all__ = [
     "CompactionStatus",
     "CompactionTrigger",
     "ControlInputKind",
+    "ContinueRejectedReason",
+    "ContinueRejectedError",
     "ControlStatus",
     "ControlInput",
     "ControlReceipt",
@@ -221,6 +227,7 @@ __all__ = [
     "CompactionFailed",
     "ContextPressureEvaluated",
     "AgentStarted",
+    "AgentContinued",
     "AssistantThinkingDelta",
     "AssistantTextDelta",
     "TurnStarted",
@@ -260,6 +267,7 @@ __all__ = [
     "AgentSession",
     "SessionMessage",
     "SessionRun",
+    "SessionRunIntent",
     "SessionCompaction",
     "SessionStorage",
     "SessionJournalStorage",

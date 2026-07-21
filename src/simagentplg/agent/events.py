@@ -30,6 +30,7 @@ class AgentEventKind(StrEnum):
     """Stable discriminator for one observable lifecycle event."""
 
     AGENT_STARTED = "agent_started"
+    AGENT_CONTINUED = "agent_continued"
     TURN_STARTED = "turn_started"
     STEERING_APPLIED = "steering_applied"
     STEERING_DISCARDED = "steering_discarded"
@@ -53,6 +54,13 @@ class AgentStarted:
 
     kind: ClassVar[AgentEventKind] = AgentEventKind.AGENT_STARTED
     task: str
+
+
+@dataclass(frozen=True, slots=True)
+class AgentContinued:
+    """A new Run resumed the existing conversation without a user message."""
+
+    kind: ClassVar[AgentEventKind] = AgentEventKind.AGENT_CONTINUED
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +244,7 @@ class AgentFinished:
 
 AgentEventPayload: TypeAlias = (
     AgentStarted
+    | AgentContinued
     | TurnStarted
     | SteeringApplied
     | SteeringDiscarded

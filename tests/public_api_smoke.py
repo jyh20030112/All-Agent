@@ -45,6 +45,8 @@ def main() -> None:
         "ControlInputKind",
         "ControlReceipt",
         "ControlStatus",
+        "ContinueRejectedReason",
+        "ContinueRejectedError",
         "FollowUpFailurePolicy",
         "FollowUpDiscardReason",
         "FollowUpHandle",
@@ -62,6 +64,8 @@ def main() -> None:
         "SessionRetry",
         "SteeringApplied",
         "SteeringDiscarded",
+        "AgentContinued",
+        "SessionRunIntent",
         "session_to_dict",
         "session_from_dict",
     }

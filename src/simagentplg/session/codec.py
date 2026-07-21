@@ -13,6 +13,7 @@ from simagentplg.session.types import (
     SessionCompaction,
     SessionMessage,
     SessionRun,
+    SessionRunIntent,
 )
 
 SESSION_SCHEMA_VERSION = 1
@@ -100,6 +101,7 @@ def _run_to_dict(run: SessionRun) -> dict[str, Any]:
     return {
         "run_id": run.run_id,
         "task": run.task,
+        "intent": run.intent.value,
         "start_sequence": run.start_sequence,
         "finish_sequence": run.finish_sequence,
         "result": (
@@ -146,11 +148,12 @@ def _run_from_dict(value: Any, index: int) -> SessionRun:
     )
     return SessionRun(
         run_id=_string(item.get("run_id"), f"{label}.run_id"),
-        task=_string(item.get("task"), f"{label}.task"),
+        task=_optional_string(item.get("task"), f"{label}.task"),
         start_sequence=_integer(
             item.get("start_sequence"),
             f"{label}.start_sequence",
         ),
+        intent=SessionRunIntent(_string(item.get("intent", "task"), f"{label}.intent")),
         finish_sequence=finish_sequence,
         result=result,
     )
