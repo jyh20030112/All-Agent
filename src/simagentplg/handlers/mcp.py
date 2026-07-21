@@ -9,10 +9,15 @@ from simagentplg.agent.cancellation import (
 from simagentplg.agent.types import StepOutcome, ToolProgressReporter
 from simagentplg.handlers.base import (
     BaseHandler,
+    UnknownToolError,
+)
+from simagentplg.handlers.definition import (
+    ToolDefinition,
     ToolDefinitionError,
     ToolEffect,
     ToolSchema,
-    UnknownToolError,
+    normalize_tool_definition,
+    normalize_tool_definitions,
 )
 from simagentplg.plugins.mcp.mcp_manager import McpServerManager
 
@@ -36,7 +41,7 @@ class McpToolHandler(BaseHandler):
         else:
             assert config_path is not None
             self.manager = McpServerManager(config_path)
-        self._tools: tuple[ToolSchema, ...] = ()
+        self._tool_definitions: tuple[ToolDefinition, ...] = ()
         effects = dict(tool_effects or {})
         for name, effect in effects.items():
             if not isinstance(effect, ToolEffect):
@@ -48,22 +53,34 @@ class McpToolHandler(BaseHandler):
 
     @property
     def tools(self) -> Sequence[ToolSchema]:
-        return self._tools
+        return tuple(tool.to_openai_tool() for tool in self._tool_definitions)
+
+    @property
+    def tool_definitions(self) -> Sequence[ToolDefinition]:
+        return self._tool_definitions
 
     async def startup(self) -> None:
         if self._started:
             return
         await self.manager.startup()
         try:
-            self._tools = tuple(self.manager.get_openai_tools())
+            definitions = normalize_tool_definitions(self.manager.get_openai_tools())
+            self._tool_definitions = definitions
             unknown = self._tool_effects.keys() - set(self.tool_names)
             if unknown:
                 names_text = ", ".join(sorted(unknown))
                 raise ToolDefinitionError(
                     f"tool effects reference unknown MCP tool(s): {names_text}"
                 )
+            self._tool_definitions = tuple(
+                normalize_tool_definition(
+                    tool,
+                    effect=self._tool_effects.get(tool.name),
+                )
+                for tool in definitions
+            )
         except Exception:
-            self._tools = ()
+            self._tool_definitions = ()
             await self.manager.shutdown()
             raise
         self._started = True
@@ -72,7 +89,7 @@ class McpToolHandler(BaseHandler):
         if not self._started:
             return
         await self.manager.shutdown()
-        self._tools = ()
+        self._tool_definitions = ()
         self._started = False
 
     async def dispatch(
@@ -92,4 +109,6 @@ class McpToolHandler(BaseHandler):
     def tool_effect(self, tool_name: str) -> ToolEffect:
         if not self.can_handle(tool_name):
             raise UnknownToolError(f"unknown MCP tool {tool_name!r}")
-        return self._tool_effects.get(tool_name, ToolEffect.SIDE_EFFECTING)
+        return next(
+            tool.effect for tool in self._tool_definitions if tool.name == tool_name
+        )

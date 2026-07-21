@@ -18,6 +18,7 @@ Requires Python 3.12 or newer.
 - Structured `AgentRunResult`, `RunStatus`, and `StopReason`
 - Explicit `RuntimePolicy` for loop and completion behavior
 - `AgentContextBuilder` for non-mutating per-turn context projection
+- OpenAI-first canonical `ToolDefinition` with legacy dictionary compatibility
 - Composable `BaseHandler` and `MethodToolHandler` tool contracts
 - `ToolRuntime` lifecycle, routing, middleware, and repeat-call protection
 - Generic `ToolMiddleware` interception
@@ -278,15 +279,28 @@ must explicitly declare a tool `READ_ONLY`, and the Runtime Policy must enable
 parallel calls:
 
 ```python
-from simagentplg import RuntimePolicy, ToolEffect
+from simagentplg import (
+    MethodToolHandler,
+    RuntimePolicy,
+    ToolDefinition,
+    ToolEffect,
+)
+
+LOOKUP_TOOL = ToolDefinition(
+    name="lookup",
+    description="Look up one value.",
+    parameters={
+        "type": "object",
+        "properties": {"key": {"type": "string"}},
+        "required": ["key"],
+    },
+    effect=ToolEffect.READ_ONLY,
+)
 
 
 class LookupHandler(MethodToolHandler):
     def __init__(self) -> None:
-        super().__init__(
-            (LOOKUP_TOOL,),
-            tool_effects={"lookup": ToolEffect.READ_ONLY},
-        )
+        super().__init__((LOOKUP_TOOL,))
 
 
 agent = BaseAgent(
@@ -594,32 +608,30 @@ from simagentplg import (
     CancellationToken,
     MethodToolHandler,
     StepOutcome,
+    ToolDefinition,
     ToolEffect,
 )
 
-ADD_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "add",
-        "description": "Add two numbers.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "left": {"type": "number"},
-                "right": {"type": "number"},
-            },
-            "required": ["left", "right"],
+ADD_TOOL = ToolDefinition(
+    name="add",
+    description="Add two numbers.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "left": {"type": "number"},
+            "right": {"type": "number"},
         },
+        "required": ["left", "right"],
+        "additionalProperties": False,
     },
-}
+    effect=ToolEffect.READ_ONLY,
+    strict=True,
+)
 
 
 class MathHandler(MethodToolHandler):
     def __init__(self) -> None:
-        super().__init__(
-            (ADD_TOOL,),
-            tool_effects={"add": ToolEffect.READ_ONLY},
-        )
+        super().__init__((ADD_TOOL,))
 
     async def do_add(
         self,
@@ -643,7 +655,18 @@ agent = BaseAgent(
 ```
 
 Duplicate tool names fail during startup instead of being silently
-overwritten.
+overwritten. `ToolDefinition` is the Core source of truth for OpenAI function
+name, description, Parameters, optional `strict`, and execution Effect.
+`to_openai_tool()` returns the provider request shape without exposing Core-only
+Effect metadata.
+
+Existing OpenAI function-calling dictionaries remain accepted and are
+normalized once when the Handler is created. The compatibility form is not
+deprecated and does not require an immediate migration:
+
+```python
+MethodToolHandler((OPENAI_TOOL_DICTIONARY,))
+```
 
 ### Tool progress
 
@@ -780,6 +803,7 @@ Orchestration + State + Context + Runtime Policy + Run Result
 + Provider Streaming + Tool Progress + Usage Accounting + Run Budget
 + Context Pressure + Compaction Preparation
 + Model Compactor + Summary Entry + Durable Session Journal
++ Canonical Tool Definition + OpenAI Schema Compatibility View
 ```
 
 Derived agents own concrete capabilities and policies:
@@ -875,7 +899,7 @@ The package root exports:
 - Session: `AgentSession`, `SessionRun`, `SessionRunIntent`, `SessionRecorder`, `SessionStorage`, `SessionJournalStorage`, `SessionTreeStorage`, `MemorySessionStorage`, `JsonlSessionStorage`, `SessionCompaction`, `SessionRecord`, `SessionRecordDraft`, `SessionRecordKind`, `SessionBranchIntent`, `SessionBranch`, `SessionCheckout`, `SessionRetry`, `DEFAULT_SESSION_BRANCH`, `SESSION_SCHEMA_VERSION`, `SESSION_JOURNAL_SCHEMA_VERSION`, `session_to_dict`, `session_from_dict`, `SessionError`, `SessionSerializationError`, `SessionStorageError`, `SessionConflictError`, `SessionLockTimeoutError`
 - Context: `AgentContextBuilder`, `ContextBuildResult`, `ContextBudget`, `ContextUsageEstimate`, `CompactionPolicy`, `AutoCompactionPolicy`, `CompactionDecision`, `CompactionPreparation`, `MessageTokenEstimator`, `estimate_context_usage`, `prepare_compaction`
 - Compaction: `CompactionRuntime`, `Compactor`, `ModelCompactor`, `CompactionContextBuilder`, `CompactorOutput`, `CompactionRequest`, `CompactionResult`, `CompactionStatus`, `CompactionTrigger`, `SummaryEntry`
-- Tools: `StepOutcome`, `ToolControl`, `ToolProgressUpdate`, `ToolProgressReporter`, `BaseHandler`, `MethodToolHandler`, `McpToolHandler`
+- Tools: `ToolDefinition`, `ToolDefinitionError`, `ToolEffect`, `StepOutcome`, `ToolControl`, `ToolProgressUpdate`, `ToolProgressReporter`, `BaseHandler`, `MethodToolHandler`, `McpToolHandler`
 - Middleware: `Middleware`, `ToolMiddleware`, `ToolCallContext`, `ToolNext`
 - Extensions: `McpServerManager`, `SkillManager`
 

@@ -2,7 +2,7 @@
 
 > 更新日期：2026-07-21
 >
-> SimAgentPlg 基线：`42975e5` 后的 Core 能力工作树，项目版本 `0.5.0`
+> SimAgentPlg 基线：`9c61e77` 后的 Core 能力工作树，项目版本 `0.5.0`
 >
 > Pi 子模块基线：`f4e9ca74`
 >
@@ -28,6 +28,7 @@ SimAgentPlg 已经不只是 Agent Loop。当前实现覆盖了通用 Agent Core 
 - Continue / Resume Safe Point、独立 Run Intent 与 Session 回放
 - `after_turn` Behavior Hooks、隔离 Turn Snapshot 与结构化策略停止
 - Parallel Read-only Tool Calls、显式 Side-effect 属性与确定性结果提交
+- OpenAI-first Canonical `ToolDefinition`、强类型校验与旧字典兼容视图
 - Python 3.12 / 3.13 CI、构建 smoke test 与 PyPI Trusted Publishing CD
 
 因此，`BaseAgent` 已经是一个可独立使用的轻量 Harness 组装根，而不再只是
@@ -37,14 +38,16 @@ SimAgentPlg 已经不只是 Agent Loop。当前实现覆盖了通用 Agent Core 
 
 1. **行为控制面**：Steering、Follow-up、Continue 与 `after_turn` Hook 基础版已完成；
    `before_model` 等更广义行为注入仍未实现。
-2. **工具调度**：只读 Tool Call 已可安全并行，但工具集合仍主要在构造或启动时确定。
-3. **Provider 广度**：只有 OpenAI-compatible Adapter，Canonical Tool Schema 仍偏 OpenAI。
+2. **工具调度**：只读 Tool Call 与 Canonical Definition 已完成基础版，但工具集合仍主要在
+   构造或启动时确定。
+3. **Provider 广度**：当前明确采用 OpenAI-first，仅实现 OpenAI-compatible Adapter；在出现
+   真实需求前不建设多 Provider Schema 抽象。
 4. **长 Journal 性能**：写入与读取仍会线性重建索引，需要按实际规模决定索引和归档策略。
 5. **ExecutionEnv / CodeAgent**：文件、Shell、Git、Workspace、Sandbox、Approval 和 UI/RPC
    明确留给派生层，当前仓库尚未实现该层。
 
-Session Journal 的并发正确性边界、行为控制链以及第一批安全并行工具调度已补齐。下一批应
-抽取 Provider-neutral Canonical Tool Definition，为第二个真实 Provider Adapter 清除结构耦合。
+Session Journal 并发边界、行为控制链、安全并行调度和 OpenAI-first Canonical Tool
+Definition 已补齐。下一批建议基于稳定定义实现 Dynamic Tool Set。
 
 ## 2. 当前架构
 
@@ -74,7 +77,8 @@ BaseAgent
   ├── AgentState
   ├── ToolRuntime
   │     ├── Read-only Batch Scheduler / Side-effect Barrier
-  │     ├── BaseHandler / MethodToolHandler / ToolEffect
+  │     ├── ToolDefinition / ToolEffect / OpenAI Compatibility View
+  │     ├── BaseHandler / MethodToolHandler
   │     ├── McpToolHandler
   │     └── ToolMiddleware
   └── SkillManager
@@ -155,6 +159,8 @@ Usage 和 Provider Error 归一化。只实现 `complete()` 的 Adapter 仍可�
 - Cancellation 与 Progress
 - 重复调用保护
 - MCP Tool 适配
+- OpenAI-first `ToolDefinition`：Name、Description、Parameters、`strict` 与 Effect
+- 旧 OpenAI 字典在 Handler 边界一次归一化
 - 显式 `ToolEffect.READ_ONLY` / `SIDE_EFFECTING`
 - Opt-in Parallel Read-only Batch 与稳定源顺序提交
 
@@ -348,6 +354,7 @@ CD 属于交付能力，不改变 Core Runtime 语义。
 | Follow-up | Agent outer loop queue | 独立 FIFO Run Chain + Waitable Handle | 基础已具备 |
 | Continue | `continue()` | 独立 Run + 无新增 User Message + Safe Point | 基础已具备 |
 | Parallel Tool Calls | 默认并行，可强制顺序 | Opt-in 只读并行 + 副作用屏障 | 基础已具备，更保守 |
+| Canonical Tool Definition | 内部强类型定义 | OpenAI-first `ToolDefinition` + 字典兼容 | 基础已具备 |
 | Dynamic Tool Set | Runtime 可替换 | 构造/启动时为主 | 未实现 |
 | Cancellation | AbortSignal | CancellationToken | 已对齐 |
 | Tool Progress | `onUpdate` | `ToolProgressReporter` | 已具备 |
@@ -459,18 +466,21 @@ Tool Result；外部取消会补齐批次和后续未启动调用；并行批次
 这验证了当前规模仍可用，但也确认逐次追加的累计成本呈二次增长。现阶段不增加 Index；
 当真实 Session 接近数千至数万 Record 时，再设计可完全从 JSONL 重建的 Sidecar Index。
 
-### 6.4 Canonical Tool Schema 仍偏 Provider
+### 6.4 Canonical Tool Definition——已完成 OpenAI-first 基础版
 
-Handler Tool Definition 仍使用 OpenAI function-calling 字典。第二个真实 Provider Adapter
-加入前，应决定：
+`ToolDefinition` 已成为 Core 内部事实来源，统一保存 Name、Description、Parameters、可选
+`strict` 和 `ToolEffect`。`MethodToolHandler` 同时接受强类型定义和旧 OpenAI 字典；旧字典只在
+构造边界归一化一次，`.tools` 继续提供兼容的 OpenAI 请求视图。Tool Runtime 的路由、重复名称
+校验、副作用调度和 Agent 日志不再解析 `tool["function"]["name"]`。
 
-- 把当前字典正式定义为 Core Canonical Schema，由 Adapter 转换；或
-- 引入强类型 `ToolDefinition`，由各 Adapter 序列化。
+该设计明确是 OpenAI-first，不尝试抽取所有 Provider 的最低公分母。Parameters 只做 JSON
+可序列化校验，具体 JSON Schema 能力仍由 OpenAI-compatible Provider 决定。未来如有真实多
+Provider 需求，可以在稳定定义外增加 Adapter 转换，而无需现在预建复杂抽象。
 
-### 6.5 Provider 广度不足
+### 6.5 Provider 广度——按需求延后
 
-只有 OpenAI-compatible Adapter。边界虽然存在，但尚未被 Anthropic、Gemini 或本地模型
-Adapter 的真实差异验证，例如 Thinking、Cache Usage、Tool Schema 和错误分类。
+目前只有 OpenAI-compatible Adapter。这是当前产品边界，不再视为近期优先缺口；只有真实接入
+需求出现后，才验证 Thinking、Cache Usage、Tool Schema 和错误分类差异。
 
 ### 6.6 Event Backpressure 是同步的
 
@@ -518,9 +528,9 @@ Adapter 的真实差异验证，例如 Thinking、Cache Usage、Tool Schema 和�
 ### 阶段六：工具调度与 Provider 扩展
 
 - Parallel Tool Calls 与 Side-effect Policy——已完成基础版
+- Canonical Tool Definition——已完成 OpenAI-first 基础版
 - Dynamic Tool Set
-- Canonical Tool Definition
-- 第二个真实 Provider Adapter
+- 第二个真实 Provider Adapter——按真实需求延后
 
 ### 阶段七：ExecutionEnv 与派生 CodeAgent
 
@@ -537,25 +547,25 @@ CodeAgent
 
 ## 8. 下一步任务建议
 
-安全并行工具调度第一批已经完成。下一步建议实现 **Canonical Tool Definition**，把 Core
-公开接口从 OpenAI function-calling 字典中解耦，再用第二个真实 Provider Adapter 验证边界。
+Canonical Tool Definition 第一批已经完成。下一步建议实现 **Dynamic Tool Set**，让长期运行
+的 Agent 可以在安全边界更新工具，而不必销毁整个 Agent 或直接修改 Handler 内部状态。
 
 ### 8.1 具体实现范围
 
-1. 定义强类型、Provider-neutral 的 `ToolDefinition`：名称、描述、输入 Schema 与执行属性。
-2. 保留现有 OpenAI 字典输入的兼容适配层，给出明确的弃用迁移路径，不立即破坏 Handler。
-3. 由每个 Provider Adapter 把 Canonical Definition 转换为自身 Tool Schema。
-4. Tool Runtime 只依赖 Canonical Definition，不再解析 OpenAI `type/function/name` 结构做路由。
-5. 明确 JSON Schema 子集、Provider 不支持字段和序列化错误的处理方式。
-6. 用第二个真实 Provider Adapter 验证 Tool Call、Usage、Thinking、Cancellation 和错误映射差异。
+1. 提供显式的注册、移除和替换接口，操作单位使用 `ToolDefinition` 与对应 Handler Route。
+2. 第一版只允许 Agent 空闲时更新；Active Run 使用启动时快照，不接受中途改变 Tool Set。
+3. Definition、Route、Middleware Chain 和 Provider Context 必须原子切换，失败时回滚旧集合。
+4. 新增 Handler 先完成 Startup 再发布；移除 Handler 在旧快照不再使用后执行 Shutdown。
+5. 重复名称、未知移除、替换冲突和生命周期失败必须返回明确错误，不留下部分注册状态。
+6. MCP 自动刷新、基于权限的临时工具和跨进程 Tool Registry 暂不纳入第一版。
 
 ### 8.2 验收标准
 
-- 现有 `MethodToolHandler((OPENAI_TOOL_DICT,))` 在兼容期无需修改即可工作。
-- Core Context 与 Tool Runtime 不再读取 Provider 专属结构。
-- OpenAI Adapter 生成的请求 Schema 与当前行为等价。
-- 第二个 Adapter 不需要伪造 OpenAI Tool Definition 才能接入。
-- Canonical Definition 的重复名称、非法 Schema、Effect 与 Adapter 不兼容均有确定性测试。
+- 默认静态 Handler 配置的行为完全不变。
+- 更新成功后，`agent.tool_definitions`、`agent.tools`、Runtime Route 和下一次模型请求一致。
+- Active Run 不观察到半更新或中途变化的工具集合。
+- Startup / Shutdown / 重复名称失败会原子回滚，并有确定性生命周期测试。
+- Session、Steering、Follow-up、Continue、并行调度和 Behavior Hook 语义不受影响。
 
-完成 Canonical Definition 后，再决定先开放 Dynamic Tool Set，还是先补第二个 Provider 的完整
-Streaming 实现；优先顺序由实际集成需求决定。
+完成空闲边界 Dynamic Tool Set 后，再根据真实需求决定是否支持 Run 内临时工具快照；第二个
+Provider 不进入近期路线。

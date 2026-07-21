@@ -62,7 +62,7 @@ from simagentplg.agent.tool_runtime import (
 )
 from simagentplg.agent.types import ToolCallResult, ToolControl
 from simagentplg.agent.usage import UsageAccumulator
-from simagentplg.handlers.base import ToolEffect
+from simagentplg.handlers.definition import ToolDefinition, ToolEffect
 from simagentplg.plugins.skill.skill_manager import SkillManager
 from simagentplg.providers.base import (
     AssistantMessage,
@@ -139,6 +139,12 @@ class AgentOrchestrator:
         """Return every tool definition available to the model."""
 
         return self.tool_runtime.tools
+
+    @property
+    def tool_definitions(self) -> tuple[ToolDefinition, ...]:
+        """Return the canonical tools used by Core routing and scheduling."""
+
+        return self.tool_runtime.tool_definitions
 
     async def run(
         self,
@@ -418,7 +424,7 @@ class AgentOrchestrator:
             await self._apply_steering(steering)
             context = self.context_builder.build(
                 self.state,
-                tools=self.tools,
+                tools=self.tool_definitions,
                 transient_messages=self._runtime_context_messages(),
             )
             preparation = await self._evaluate_context_pressure(context)

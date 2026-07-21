@@ -51,6 +51,7 @@ from simagentplg.providers.base import ModelAdapter
 
 if TYPE_CHECKING:
     from simagentplg.handlers.base import BaseHandler
+    from simagentplg.handlers.definition import ToolDefinition
     from simagentplg.session.types import AgentSession
 
 DEFAULT_SYSTEM_PROMPT = "You are a helpful, concise assistant."
@@ -210,6 +211,12 @@ class BaseAgent:
         return self.orchestrator.tools
 
     @property
+    def tool_definitions(self) -> tuple[ToolDefinition, ...]:
+        """Return the canonical definitions registered with this Agent."""
+
+        return self.orchestrator.tool_definitions
+
+    @property
     def messages(self) -> list[dict[str, Any]]:
         """Return the agent's persistent conversation history."""
 
@@ -309,14 +316,13 @@ class BaseAgent:
         try:
             await self.model.startup()
             await self._tool_runtime.startup()
-            if self._tool_runtime.tools:
+            if self._tool_runtime.tool_definitions:
                 self.logger.info(
                     "Loaded %d handler(s); registered tools: %s",
                     len(self.handlers),
                     ", ".join(
                         sorted(
-                            tool["function"]["name"]
-                            for tool in self._tool_runtime.tools
+                            tool.name for tool in self._tool_runtime.tool_definitions
                         )
                     ),
                 )

@@ -17,6 +17,7 @@ Middleware、MCP 和 Skill 等运行机制；Shell、文件编辑、Git、审批
 - 结构化的 `AgentRunResult`、`RunStatus` 和 `StopReason`
 - 显式的 `RuntimePolicy`，控制循环和完成策略
 - `AgentContextBuilder`，构造不修改历史的每轮上下文
+- OpenAI-first 的强类型 `ToolDefinition`，并兼容旧工具字典
 - 可组合的 `BaseHandler` 和 `MethodToolHandler` 工具协议
 - `ToolRuntime` 生命周期、路由、Middleware 和重复调用保护
 - 通用 `ToolMiddleware` 拦截机制
@@ -213,15 +214,28 @@ agent = BaseAgent(
 `ToolEffect.READ_ONLY`，Runtime Policy 也必须允许并行：
 
 ```python
-from simagentplg import RuntimePolicy, ToolEffect
+from simagentplg import (
+    MethodToolHandler,
+    RuntimePolicy,
+    ToolDefinition,
+    ToolEffect,
+)
+
+LOOKUP_TOOL = ToolDefinition(
+    name="lookup",
+    description="查询一个值。",
+    parameters={
+        "type": "object",
+        "properties": {"key": {"type": "string"}},
+        "required": ["key"],
+    },
+    effect=ToolEffect.READ_ONLY,
+)
 
 
 class LookupHandler(MethodToolHandler):
     def __init__(self) -> None:
-        super().__init__(
-            (LOOKUP_TOOL,),
-            tool_effects={"lookup": ToolEffect.READ_ONLY},
-        )
+        super().__init__((LOOKUP_TOOL,))
 
 
 agent = BaseAgent(
@@ -456,31 +470,33 @@ policy = RuntimePolicy(require_explicit_finish=True)
 from collections.abc import Mapping
 from typing import Any
 
-from simagentplg import MethodToolHandler, StepOutcome, ToolEffect
+from simagentplg import (
+    MethodToolHandler,
+    StepOutcome,
+    ToolDefinition,
+    ToolEffect,
+)
 
-ADD_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "add",
-        "description": "Add two numbers.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "left": {"type": "number"},
-                "right": {"type": "number"},
-            },
-            "required": ["left", "right"],
+ADD_TOOL = ToolDefinition(
+    name="add",
+    description="计算两个数的和。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "left": {"type": "number"},
+            "right": {"type": "number"},
         },
+        "required": ["left", "right"],
+        "additionalProperties": False,
     },
-}
+    effect=ToolEffect.READ_ONLY,
+    strict=True,
+)
 
 
 class MathHandler(MethodToolHandler):
     def __init__(self) -> None:
-        super().__init__(
-            (ADD_TOOL,),
-            tool_effects={"add": ToolEffect.READ_ONLY},
-        )
+        super().__init__((ADD_TOOL,))
 
     async def do_add(self, arguments: Mapping[str, Any]) -> StepOutcome:
         return StepOutcome(
@@ -498,7 +514,16 @@ agent = BaseAgent(
 )
 ```
 
-重复工具名会在启动阶段报错，不会静默覆盖。
+重复工具名会在启动阶段报错，不会静默覆盖。`ToolDefinition` 统一保存 OpenAI Function 的
+名称、描述、Parameters、可选 `strict` 和执行 Effect；`to_openai_tool()` 只输出 Provider
+请求字段，不会泄漏 Core 专用的 Effect metadata。
+
+原有 OpenAI function-calling 字典仍然兼容，并在 Handler 构造时归一化一次。兼容写法不会
+立即弃用，现有项目不需要同步迁移：
+
+```python
+MethodToolHandler((OPENAI_TOOL_DICTIONARY,))
+```
 
 ### 工具执行进度
 
@@ -627,6 +652,7 @@ Orchestration + State + Context + Runtime Policy + Run Result
 + Model Compactor + Summary Entry + Durable Session Journal + Session Tree
 + Cancellation + Steering + Follow-up + Continue + Behavior Hooks
 + Parallel Read-only Tool Scheduler + Side-effect Barrier
++ Canonical Tool Definition + OpenAI Schema Compatibility View
 ```
 
 派生 Agent 负责具体能力与策略：
@@ -705,7 +731,7 @@ git push origin v0.5.0
 - Session：`AgentSession`、`SessionRecorder`、`SessionStorage`、`SessionJournalStorage`、`SessionTreeStorage`、`MemorySessionStorage`、`JsonlSessionStorage`、`SessionRunIntent`、`SessionCompaction`、`SessionRecord`、`SessionRecordDraft`、`SessionRecordKind`、`SessionBranchIntent`、`SessionBranch`、`SessionCheckout`、`SessionRetry`、`DEFAULT_SESSION_BRANCH`、`SESSION_SCHEMA_VERSION`、`SESSION_JOURNAL_SCHEMA_VERSION`、`session_to_dict`、`session_from_dict`、`SessionError`、`SessionSerializationError`、`SessionStorageError`、`SessionConflictError`、`SessionLockTimeoutError`
 - Context：`AgentContextBuilder`、`ContextBuildResult`、`ContextBudget`、`ContextUsageEstimate`、`CompactionPolicy`、`AutoCompactionPolicy`、`CompactionDecision`、`CompactionPreparation`、`MessageTokenEstimator`
 - Compaction：`CompactionRuntime`、`Compactor`、`ModelCompactor`、`CompactionContextBuilder`、`CompactorOutput`、`CompactionRequest`、`CompactionResult`、`CompactionStatus`、`CompactionTrigger`、`SummaryEntry`
-- Tool：`StepOutcome`、`ToolControl`、`ToolEffect`、`ToolProgressReporter`、`ToolProgressUpdate`、`BaseHandler`、`MethodToolHandler`、`McpToolHandler`
+- Tool：`ToolDefinition`、`ToolDefinitionError`、`ToolEffect`、`StepOutcome`、`ToolControl`、`ToolProgressReporter`、`ToolProgressUpdate`、`BaseHandler`、`MethodToolHandler`、`McpToolHandler`
 - Middleware：`Middleware`、`ToolMiddleware`、`ToolCallContext`、`ToolNext`
 - Event：`AgentEvent`、`AgentEventSink`、`AgentStarted`、`AgentContinued`、`TurnStarted`、`MessageCompleted`、`ToolStarted`、`ToolProgressed`、`ToolCompleted`、`TurnCompleted`、`AgentFinished`
 - 扩展：`McpServerManager`、`SkillManager`

@@ -23,7 +23,8 @@ from simagentplg.agent.types import (
     ToolProgressReporter,
     ToolProgressUpdate,
 )
-from simagentplg.handlers.base import BaseHandler, ToolEffect
+from simagentplg.handlers.base import BaseHandler
+from simagentplg.handlers.definition import ToolDefinition, ToolEffect
 from simagentplg.middleware import (
     ToolCallContext,
     ToolMiddleware,
@@ -117,7 +118,20 @@ class ToolRuntime:
 
     @property
     def tools(self) -> list[dict[str, Any]]:
-        return [tool for handler in self.handlers for tool in handler.tools]
+        return [tool.to_openai_tool() for tool in self.tool_definitions]
+
+    @property
+    def tool_definitions(self) -> tuple[ToolDefinition, ...]:
+        """Return the canonical tool collection registered with this runtime."""
+
+        definitions: list[ToolDefinition] = []
+        for handler in self.handlers:
+            for tool in handler.tool_definitions:
+                effect = handler.tool_effect(tool.name)
+                definitions.append(
+                    tool if effect is tool.effect else tool.with_effect(effect)
+                )
+        return tuple(definitions)
 
     async def startup(self) -> None:
         if self._started:
