@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
+from enum import StrEnum
 from inspect import Parameter, signature
 from typing import Any
 
@@ -11,6 +12,13 @@ from simagentplg.agent.types import StepOutcome, ToolProgressReporter
 from simagentplg.middleware.base import ToolCallContext
 
 ToolSchema = dict[str, Any]
+
+
+class ToolEffect(StrEnum):
+    """Declared side-effect class used by the Core tool scheduler."""
+
+    READ_ONLY = "read_only"
+    SIDE_EFFECTING = "side_effecting"
 
 
 class ToolDefinitionError(ValueError):
@@ -44,6 +52,11 @@ class BaseHandler(ABC):
 
     def can_handle(self, tool_name: str) -> bool:
         return tool_name in self.tool_names
+
+    def tool_effect(self, tool_name: str) -> ToolEffect:
+        """Return the conservative execution effect for one registered tool."""
+
+        return ToolEffect.SIDE_EFFECTING
 
     async def execute(self, context: ToolCallContext) -> StepOutcome:
         """Execute a runtime context while adapting legacy dispatch methods."""
@@ -88,15 +101,38 @@ class BaseHandler(ABC):
 class MethodToolHandler(BaseHandler):
     """Handler that maps tool names to async ``do_<tool_name>`` methods."""
 
-    def __init__(self, tools: Sequence[ToolSchema]) -> None:
+    def __init__(
+        self,
+        tools: Sequence[ToolSchema],
+        *,
+        tool_effects: Mapping[str, ToolEffect] | None = None,
+    ) -> None:
         self._tools = tuple(tools)
         names = self.tool_names
         if len(names) != len(set(names)):
             raise ToolDefinitionError("handler contains duplicate tool names")
+        effects = dict(tool_effects or {})
+        unknown = effects.keys() - set(names)
+        if unknown:
+            names_text = ", ".join(sorted(unknown))
+            raise ToolDefinitionError(
+                f"tool effects reference unknown tool(s): {names_text}"
+            )
+        for name, effect in effects.items():
+            if not isinstance(effect, ToolEffect):
+                raise ToolDefinitionError(
+                    f"tool effect for {name!r} must be a ToolEffect"
+                )
+        self._tool_effects = effects
 
     @property
     def tools(self) -> Sequence[ToolSchema]:
         return self._tools
+
+    def tool_effect(self, tool_name: str) -> ToolEffect:
+        if not self.can_handle(tool_name):
+            raise UnknownToolError(f"unknown tool {tool_name!r}")
+        return self._tool_effects.get(tool_name, ToolEffect.SIDE_EFFECTING)
 
     async def dispatch(
         self,

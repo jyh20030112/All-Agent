@@ -235,6 +235,42 @@ Tool Calls raise `ContinueRejectedError` with a typed
 Follow-up chaining, automatic Compaction, terminal Event Sink barriers, and
 `wait_for_idle()` semantics.
 
+### Behavior Hooks
+
+`BehaviorHook` controls whether a non-terminal full Turn may advance to the
+next Provider request. It is deliberately separate from read-only Event Sinks
+and Tool Middleware:
+
+```python
+from simagentplg import BehaviorDecision
+
+
+class StopAfterFirstToolTurn:
+    async def after_turn(self, snapshot, *, cancellation):
+        if snapshot.turn >= 1:
+            return BehaviorDecision.stop("paused at a safe Turn boundary")
+        return None
+
+
+agent = BaseAgent(
+    model,
+    agent_id="controlled-agent",
+    behavior_hooks=[StopAfterFirstToolTurn()],
+)
+```
+
+The decision point runs after `TurnCompleted` work, including every committed
+Tool Result, and before another `TurnStarted` or Provider request. Hooks receive
+a detached `TurnSnapshot` plus the Run's `CancellationToken`; they never receive
+mutable `AgentState`. Multiple Hooks are awaited in declaration order, and the
+first STOP short-circuits the rest.
+
+STOP completes the Run with `StopReason.BEHAVIOR_STOP`, normal `AgentFinished`
+and Session `run_finished` records. This is a safe Continue boundary. Hook
+exceptions become `RUNTIME_ERROR`; abort interrupts a slow Hook, and
+`wait_for_idle()` includes Hook backpressure. Hooks are not invoked after a Turn
+that already produced a terminal result.
+
 ### Streaming responses
 
 `BaseAgent.run()` still returns one final `AgentRunResult`, while provisional
@@ -779,6 +815,7 @@ The package root exports:
 - Agent: `BaseAgent`, `AgentOrchestrator`, `AgentState`, `AgentStatus`
 - Providers: `ModelAdapter`, `OpenAIModelAdapter`, `ModelConfig`, `AssistantMessage`, `ModelToolCall`, `ModelUsage`, `ModelStreamEvent`, `ModelTextDelta`, `ModelThinkingDelta`, `ModelResponseCompleted`, `ModelErrorKind`, `ModelProviderError`, `ContextOverflowError`, `ModelRateLimitError`, `ModelTimeoutError`, `ModelAuthenticationError`
 - Runtime: `RuntimePolicy`, `AgentRunResult`, `RunUsage`, `AgentRunError`, `RunStatus`, `StopReason`
+- Behavior: `BehaviorHook`, `BehaviorAction`, `BehaviorDecision`, `BehaviorHookError`, `TurnSnapshot`
 - Cancellation: `CancellationToken`, `CancellationSource`, `AgentCancelledError`
 - Events: `AgentEvent`, `AgentEventSink`, `CompositeAgentEventSink`, `AgentContinued`, `AssistantTextDelta`, `AssistantThinkingDelta`, `ToolProgressed`, `SteeringApplied`, `SteeringDiscarded`, `ContextPressureEvaluated`, `CompactionStarted`, `CompactionCompleted`, `CompactionFailed`
 - Control: `ControlInputKind`, `ControlStatus`, `ControlInput`, `ControlReceipt`, `ContinueRejectedReason`, `ContinueRejectedError`, `FollowUpFailurePolicy`, `FollowUpDiscardReason`, `FollowUpHandle`, `FollowUpError`, `FollowUpRejectedError`, `FollowUpDiscardedError`

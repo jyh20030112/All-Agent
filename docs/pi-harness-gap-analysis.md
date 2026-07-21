@@ -26,6 +26,7 @@ SimAgentPlg 已经不只是 Agent Loop。当前实现覆盖了通用 Agent Core 
 - 有界 FIFO Steering Queue、Model-call Safe Point 与 Session 审计
 - Follow-up Run Chain、有界 FIFO、Waitable Handle 与终态 Sink 屏障
 - Continue / Resume Safe Point、独立 Run Intent 与 Session 回放
+- `after_turn` Behavior Hooks、隔离 Turn Snapshot 与结构化策略停止
 - Python 3.12 / 3.13 CI、构建 smoke test 与 PyPI Trusted Publishing CD
 
 因此，`BaseAgent` 已经是一个可独立使用的轻量 Harness 组装根，而不再只是
@@ -33,15 +34,16 @@ SimAgentPlg 已经不只是 Agent Loop。当前实现覆盖了通用 Agent Core 
 
 与 Pi 的主要差距已经从“缺少持久化和自动压缩”转移到以下领域：
 
-1. **行为控制面**：Steering、Follow-up 与 Continue 基础版已完成；尚无通用行为控制策略。
+1. **行为控制面**：Steering、Follow-up、Continue 与 `after_turn` Hook 基础版已完成；
+   `before_model` 等更广义行为注入仍未实现。
 2. **工具调度**：Tool Call 仍顺序执行，工具集合主要在构造或启动时确定。
 3. **Provider 广度**：只有 OpenAI-compatible Adapter，Canonical Tool Schema 仍偏 OpenAI。
 4. **长 Journal 性能**：写入与读取仍会线性重建索引，需要按实际规模决定索引和归档策略。
 5. **ExecutionEnv / CodeAgent**：文件、Shell、Git、Workspace、Sandbox、Approval 和 UI/RPC
    明确留给派生层，当前仓库尚未实现该层。
 
-Session Journal 的并发正确性边界、Steering Safe Point、Follow-up Run Chain 和 Continue
-Resume Safe Point 已补齐。行为控制面的下一批应实现独立于只读 Event 的 Behavior Hooks。
+Session Journal 的并发正确性边界以及 Steering、Follow-up、Continue、`after_turn` Behavior
+控制链已补齐。下一批应进入 Parallel Tool Calls 与 Side-effect Policy。
 
 ## 2. 当前架构
 
@@ -51,6 +53,7 @@ BaseAgent
   ├── Bounded Steering Queue / Control Receipt
   ├── Follow-up FIFO / Run Handle / Run-chain Gate
   ├── Continue Safe Point / Run Intent
+  ├── BehaviorHook / TurnSnapshot / BehaviorDecision
   ├── ModelAdapter
   │     └── OpenAIModelAdapter
   ├── AgentOrchestrator
@@ -79,8 +82,8 @@ BaseAgent
 
 | 组件 | 当前职责 |
 |---|---|
-| `BaseAgent` | 依赖组装、Run Chain、Steering、Follow-up、取消、空闲等待、资源生命周期、Session Restore |
-| `AgentOrchestrator` | 模型—工具循环、自动压缩、Overflow Recovery、结构化终止 |
+| `BaseAgent` | 依赖组装、Run Chain、Steering、Follow-up、Behavior Hook、取消、空闲等待、资源生命周期、Session Restore |
+| `AgentOrchestrator` | 模型—工具循环、after-Turn 决策、自动压缩、Overflow Recovery、结构化终止 |
 | `AgentState` | 当前消息、Turn、任务状态和运行结果 |
 | `AgentContextBuilder` | 构造 Agent 投影和 Provider-safe 请求，注入 Skill 与临时控制消息 |
 | `RuntimePolicy` | 步数、无工具响应、重复调用、显式完成和 Run Token Budget |
@@ -176,7 +179,7 @@ AgentFinished
 `AgentState` 或 Session，只有 `MessageCompleted` 才是提交点。Thinking 和 Progress 默认
 不进入后续模型上下文。
 
-`CancellationToken` 已传递到 Model、Compactor、Tool Runtime、Middleware、Handler 和
+`CancellationToken` 已传递到 Model、Compactor、Tool Runtime、Middleware、Handler、Behavior Hook 和
 MCP。`abort()` 不等待操作锁，`wait_for_idle()` 覆盖终态 Sink 收尾；取消后同一 Agent
 可以复用。
 
@@ -224,7 +227,22 @@ Continue 复用普通 Run 的 Cancellation、Steering Safe Point、Auto Compacti
 Run Chain、`AgentFinished` Sink Barrier 和 `wait_for_idle()`。因此它不是修改旧 Run，也不是
 Retry Branch；它只是从安全历史边界继续模型循环。
 
-### 3.7 Usage、Context 与 Compaction
+### 3.7 Behavior Hooks
+
+`BehaviorHook.after_turn()` 是独立于只读 Event Sink 和 Tool Middleware 的行为决策点。它只在
+本来还会进入下一 Turn 的完整非终态回合执行，位置固定为：Tool Result 提交、
+`TurnCompleted` 完成之后，下一次 `TurnStarted` 和 Provider Request 之前。
+
+Hook 接收隔离的 `TurnSnapshot` 和当前 `CancellationToken`，不接触可变 `AgentState`。多个
+Hook 按声明顺序 await；`None` 或 `BehaviorDecision.CONTINUE` 继续，首个 STOP 短路后续 Hook，
+并产生 `RunStatus.COMPLETED + StopReason.BEHAVIOR_STOP`。正常 `AgentFinished` 和 Session
+`run_finished` 仍会完成，因此该终态也是允许显式 Continue 的安全边界。
+
+Hook 异常或非法返回值转换为 `RUNTIME_ERROR`，慢 Hook 形成有意的有界背压，`abort()` 可以
+中断它，`wait_for_idle()` 会等待 Hook 与终态 Sink。第一批不加入 `before_model` Context 注入，
+避免与 `AgentContextBuilder` 职责重叠。
+
+### 3.8 Usage、Context 与 Compaction
 
 当前上下文管理链路已经完整接通：
 
@@ -251,7 +269,7 @@ ModelUsage
 - Compactor 失败安全终止，不安装部分 Summary。
 - Compaction 通过 Session Record 持久化，原始审计 Entry 不删除。
 
-### 3.8 Durable JSONL Session Tree
+### 3.9 Durable JSONL Session Tree
 
 `SessionRecorder` 对 Journal Storage 追加语义 Record：
 
@@ -297,7 +315,7 @@ JSONL 的当前耐久性保证：
 
 尚未保证的是多个进程对同一 Session 的 read-validate-append 原子性。
 
-### 3.9 交付与兼容性
+### 3.10 交付与兼容性
 
 - Python 3.12 和 3.13 质量矩阵
 - Ruff、Mypy、Unit Test、sdist/wheel 和安装后 Public API smoke test
@@ -318,7 +336,7 @@ CD 属于交付能力，不改变 Core Runtime 语义。
 | Event Stream | Message Snapshot + Delta | 分型 Delta + 原子 Message Commit | 语义不同，均可用 |
 | Event Barrier | `Agent` Subscriber | 顺序 await `AgentEventSink` | 已具备 |
 | Tool Middleware / Hook | `beforeToolCall`、`afterToolCall` | `ToolMiddleware` | 部分具备 |
-| Stop-after-turn Hook | `shouldStopAfterTurn` | 无通用接口 | 未实现 |
+| Stop-after-turn Hook | `shouldStopAfterTurn` | 顺序 await `BehaviorHook.after_turn` | 基础已具备 |
 | Steering | Queue + safe turn boundary | 有界 FIFO + Model-call Safe Point | 基础已具备 |
 | Follow-up | Agent outer loop queue | 独立 FIFO Run Chain + Waitable Handle | 基础已具备 |
 | Continue | `continue()` | 独立 Run + 无新增 User Message + Safe Point | 基础已具备 |
@@ -480,8 +498,9 @@ Adapter 的真实差异验证，例如 Thinking、Cache Usage、Tool Schema 和�
 - Steering Queue、Safe Point、回执和 Session 审计——已完成基础版
 - Follow-up Queue、Run Handle、失败策略和终态屏障——已完成基础版
 - Continue / Resume-safe-point、Run Intent 和 Session 回放——已完成基础版
-- 独立于只读 Event 的行为型 Hook
-- Queue 与 Session Journal 的持久化边界
+- 独立于只读 Event 的 `after_turn` Behavior Hook——已完成基础版
+- Queue 与 Session Journal 的进程内 / Durable 边界——已明确
+- `before_model` 等扩展决策点——按真实需求延后
 
 ### 阶段六：工具调度与 Provider 扩展
 
@@ -505,25 +524,24 @@ CodeAgent
 
 ## 8. 下一步任务建议
 
-Steering、Follow-up 和 Continue 基础版已经完成。下一步建议实现 **Behavior Hooks**，补足
-Tool Middleware 之外的 Turn / Run 行为控制，同时继续保持 Event Sink 只读。
+行为控制面第一批已经完成。下一步建议实现 **Parallel Tool Calls 与 Side-effect Policy**，
+提高独立只读工具的吞吐，同时继续保持有副作用工具的确定性和安全性。
 
 ### 8.1 具体实现范围
 
-1. 定义独立 `BehaviorHook` 协议，不复用 `AgentEventSink` 或 `ToolMiddleware`。
-2. 第一批只加入确定性的 `after_turn` 决策点，允许继续或以结构化原因停止 Run。
-3. Hook 接收只读 Turn Snapshot 和 CancellationToken，不直接暴露可变 `AgentState`。
-4. 多个 Hook 按注册顺序 await；异常转换为明确 Runtime Failure，不静默跳过。
-5. Hook 决策必须发生在完整 Tool Result 提交之后、下一个 Provider Request 之前。
-6. 后续再按真实需求增加 `before_model` 临时上下文注入，不与 `AgentContextBuilder` 职责重叠。
+1. 为 Tool Definition 增加 Core 级执行属性，至少区分 `read_only` 与 `side_effecting`。
+2. 默认继续顺序执行；只有策略明确允许的只读 Tool Call 才能并行。
+3. 并行执行时，`ToolStarted` 可按源顺序发出，Tool Result 必须按 Assistant Tool Call 原顺序提交。
+4. 任一调用产生 COMPLETE / REJECT / CANCEL 时，明确剩余任务的取消和结果补齐语义。
+5. 并行任务共享 Run Cancellation，但每个 Tool Progress 仍绑定原始 `tool_call_id`。
+6. 第一版不做自动副作用推断，未标注工具一律按有副作用、顺序执行处理。
 
 ### 8.2 验收标准
 
-- Event Sink 仍严格只读，现有观察者不会改变 Agent 行为。
-- `after_turn` 永远在 `TurnCompleted` 对应工作完成后决定是否发起下一 Turn。
-- Hook Stop 产生独立 Stop Reason、正常 `AgentFinished` 和 Session `run_finished`。
-- Hook 顺序、异常、取消和慢 Hook 的 Backpressure 都有测试。
-- Steering、Follow-up、Continue 和 Tool Middleware 的现有语义不发生变化。
+- 默认配置下，现有 Tool 执行顺序和事件语义完全不变。
+- 多个允许并行的只读工具真实并发执行，但写入历史的 Tool Message 顺序稳定。
+- 有副作用或混合批次遵循显式策略，不发生隐式并行。
+- 并行失败、取消、Terminal Tool 和 Progress 均有确定性测试。
+- Session Recorder、Steering、Behavior Hook 和重复调用保护语义不发生变化。
 
-Behavior Hooks 完成后，再进入 Parallel Tool Calls、Side-effect Policy 和 Canonical Tool
-Definition。
+完成并行调度后，再抽取 Canonical Tool Definition，并用第二个真实 Provider Adapter 验证。

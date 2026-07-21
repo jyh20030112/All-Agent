@@ -1,6 +1,13 @@
 """Composable stateful agents with tool handlers and MCP integration."""
 
 from simagentplg.agent.base import BaseAgent
+from simagentplg.agent.behavior import (
+    BehaviorAction,
+    BehaviorDecision,
+    BehaviorHook,
+    BehaviorHookError,
+    TurnSnapshot,
+)
 from simagentplg.agent.cancellation import (
     AgentCancelledError,
     CancellationSource,
@@ -96,6 +103,7 @@ from simagentplg.handlers import (
     McpToolHandler,
     MethodToolHandler,
     ToolDefinitionError,
+    ToolEffect,
     UnknownToolError,
 )
 from simagentplg.middleware import (
@@ -159,6 +167,11 @@ from simagentplg.session import (
 
 __all__ = [
     "BaseAgent",
+    "BehaviorAction",
+    "BehaviorDecision",
+    "BehaviorHook",
+    "BehaviorHookError",
+    "TurnSnapshot",
     "AgentCancelledError",
     "CancellationSource",
     "CancellationToken",
@@ -261,6 +274,7 @@ __all__ = [
     "MethodToolHandler",
     "McpToolHandler",
     "ToolDefinitionError",
+    "ToolEffect",
     "UnknownToolError",
     "McpServerManager",
     "SkillManager",

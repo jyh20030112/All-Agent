@@ -1,6 +1,13 @@
 """Agent runtime primitives."""
 
 from simagentplg.agent.base import BaseAgent
+from simagentplg.agent.behavior import (
+    BehaviorAction,
+    BehaviorDecision,
+    BehaviorHook,
+    BehaviorHookError,
+    TurnSnapshot,
+)
 from simagentplg.agent.cancellation import (
     AgentCancelledError,
     CancellationSource,
@@ -102,6 +109,11 @@ from simagentplg.middleware import (
 
 __all__ = [
     "BaseAgent",
+    "BehaviorAction",
+    "BehaviorDecision",
+    "BehaviorHook",
+    "BehaviorHookError",
+    "TurnSnapshot",
     "AgentCancelledError",
     "CancellationSource",
     "CancellationToken",

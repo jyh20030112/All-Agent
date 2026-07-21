@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from simagentplg.agent.cancellation import (
@@ -23,7 +23,7 @@ from simagentplg.agent.types import (
     ToolProgressReporter,
     ToolProgressUpdate,
 )
-from simagentplg.handlers.base import BaseHandler
+from simagentplg.handlers.base import BaseHandler, ToolEffect
 from simagentplg.middleware import (
     ToolCallContext,
     ToolMiddleware,
@@ -234,10 +234,13 @@ class ToolRuntime:
         tool_call: ModelToolCall,
         *,
         cancellation: CancellationToken,
+        prepared: bool = False,
+        defer_completion: bool = False,
     ) -> ToolCallResult:
         tool_name = tool_call.name
         raw_arguments = tool_call.arguments
-        await self.event_emitter.emit(ToolStarted(self.state.turn, tool_call))
+        if not prepared:
+            await self.event_emitter.emit(ToolStarted(self.state.turn, tool_call))
         progress = _ScopedToolProgressReporter(
             event_emitter=self.event_emitter,
             turn=self.state.turn,
@@ -250,7 +253,8 @@ class ToolRuntime:
         outcome: StepOutcome | None = None
         try:
             try:
-                self._check_repeated_tool_call(tool_name, raw_arguments)
+                if not prepared:
+                    self._check_repeated_tool_call(tool_name, raw_arguments)
                 arguments = json.loads(raw_arguments)
                 if not isinstance(arguments, dict):
                     raise TypeError("tool arguments must be a JSON object")
@@ -282,9 +286,8 @@ class ToolRuntime:
             await progress.close()
 
         if immediate_result is not None:
-            await self.event_emitter.emit(
-                ToolCompleted(self.state.turn, tool_call, immediate_result)
-            )
+            if not defer_completion:
+                await self.complete_tool_call(tool_call, immediate_result)
             if repeated_error is not None:
                 raise repeated_error
             return immediate_result
@@ -305,8 +308,40 @@ class ToolRuntime:
             )
         else:
             result = ToolCallResult((message,), error=error)
-        await self.event_emitter.emit(ToolCompleted(self.state.turn, tool_call, result))
+        if not defer_completion:
+            await self.complete_tool_call(tool_call, result)
         return result
+
+    async def prepare_parallel_tool_calls(
+        self,
+        tool_calls: Sequence[ModelToolCall],
+    ) -> bool:
+        """Reserve repetition state and emit ordered starts for one safe batch."""
+
+        if not self._reserve_repeated_tool_calls(tool_calls):
+            return False
+        for tool_call in tool_calls:
+            await self.event_emitter.emit(ToolStarted(self.state.turn, tool_call))
+        return True
+
+    async def complete_tool_call(
+        self,
+        tool_call: ModelToolCall,
+        result: ToolCallResult,
+    ) -> None:
+        """Emit one completion at the scheduler's deterministic commit point."""
+
+        await self.event_emitter.emit(
+            ToolCompleted(self.state.turn, tool_call, result)
+        )
+
+    def tool_effect(self, tool_name: str) -> ToolEffect:
+        """Return one route's declared effect, defaulting unknown calls to unsafe."""
+
+        handler = self._tool_routes.get(tool_name)
+        if handler is None:
+            return ToolEffect.SIDE_EFFECTING
+        return handler.tool_effect(tool_name)
 
     async def cancel_tool_call(
         self,
@@ -374,18 +409,7 @@ class ToolRuntime:
         tool_name: str,
         raw_arguments: str,
     ) -> None:
-        try:
-            arguments = json.loads(raw_arguments)
-            normalized_arguments = json.dumps(
-                arguments,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-        except (TypeError, ValueError):
-            normalized_arguments = raw_arguments
-
-        signature = (tool_name, normalized_arguments)
+        signature = self._tool_signature(tool_name, raw_arguments)
         if signature == self._last_tool_signature:
             self._repeated_tool_calls += 1
         else:
@@ -397,6 +421,48 @@ class ToolRuntime:
                 f"tool {tool_name!r} was called with the same arguments "
                 f"{self.max_repeated_tool_calls} consecutive times"
             )
+
+    def _reserve_repeated_tool_calls(
+        self,
+        tool_calls: Sequence[ModelToolCall],
+    ) -> bool:
+        """Atomically reserve source-ordered guard state or request fallback."""
+
+        last_signature = self._last_tool_signature
+        repeated_calls = self._repeated_tool_calls
+        for tool_call in tool_calls:
+            signature = self._tool_signature(
+                tool_call.name,
+                tool_call.arguments,
+            )
+            if signature == last_signature:
+                repeated_calls += 1
+            else:
+                last_signature = signature
+                repeated_calls = 1
+            if repeated_calls >= self.max_repeated_tool_calls:
+                return False
+
+        self._last_tool_signature = last_signature
+        self._repeated_tool_calls = repeated_calls
+        return True
+
+    @staticmethod
+    def _tool_signature(
+        tool_name: str,
+        raw_arguments: str,
+    ) -> tuple[str, str]:
+        try:
+            arguments = json.loads(raw_arguments)
+            normalized_arguments = json.dumps(
+                arguments,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError):
+            normalized_arguments = raw_arguments
+        return tool_name, normalized_arguments
 
 
 def serialize_tool_result(data: Any) -> str:

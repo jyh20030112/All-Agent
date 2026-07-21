@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from simagentplg.agent.behavior import BehaviorHook
 from simagentplg.agent.cancellation import (
     CancellationSource,
 )
@@ -87,6 +88,7 @@ class BaseAgent:
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         handlers: Iterable[BaseHandler] | None = None,
         middlewares: Iterable[ToolMiddleware] | None = None,
+        behavior_hooks: Iterable[BehaviorHook] | None = None,
         skills_dir: str | Path | None = None,
         context_builder: AgentContextBuilder | None = None,
         compaction_policy: CompactionPolicy | None = None,
@@ -133,6 +135,7 @@ class BaseAgent:
         self.context_token_estimator = context_token_estimator
         self.handlers = list(handlers or ())
         self.middlewares = list(middlewares or ())
+        self.behavior_hooks = tuple(behavior_hooks or ())
         self.event_sink = event_sink
         self.steering_queue_capacity = steering_queue_capacity
         self.follow_up_queue_capacity = follow_up_queue_capacity
@@ -189,6 +192,7 @@ class BaseAgent:
             compactor=self.compactor,
             compaction_runtime=self._compaction_runtime,
             context_token_estimator=self.context_token_estimator,
+            behavior_hooks=self.behavior_hooks,
             event_emitter=self._event_emitter,
         )
         self.reset()

@@ -5,6 +5,13 @@ from collections.abc import AsyncIterator
 from contextlib import suppress
 from typing import Any, Protocol
 
+from simagentplg.agent.behavior import (
+    BehaviorAction,
+    BehaviorDecision,
+    BehaviorHook,
+    BehaviorHookError,
+    TurnSnapshot,
+)
 from simagentplg.agent.cancellation import (
     AgentCancelledError,
     CancellationSource,
@@ -55,6 +62,7 @@ from simagentplg.agent.tool_runtime import (
 )
 from simagentplg.agent.types import ToolCallResult, ToolControl
 from simagentplg.agent.usage import UsageAccumulator
+from simagentplg.handlers.base import ToolEffect
 from simagentplg.plugins.skill.skill_manager import SkillManager
 from simagentplg.providers.base import (
     AssistantMessage,
@@ -63,6 +71,7 @@ from simagentplg.providers.base import (
     ModelStreamEvent,
     ModelTextDelta,
     ModelThinkingDelta,
+    ModelToolCall,
     serialize_assistant_message,
 )
 
@@ -106,6 +115,7 @@ class AgentOrchestrator:
         compactor: Compactor | None = None,
         compaction_runtime: CompactionRuntime | None = None,
         context_token_estimator: MessageTokenEstimator | None = None,
+        behavior_hooks: tuple[BehaviorHook, ...] = (),
         event_emitter: AgentEventEmitter,
     ) -> None:
         self.agent_id = agent_id
@@ -120,6 +130,7 @@ class AgentOrchestrator:
         self.compactor = compactor
         self.compaction_runtime = compaction_runtime
         self.context_token_estimator = context_token_estimator
+        self.behavior_hooks = behavior_hooks
         self.event_emitter = event_emitter
         self._usage = UsageAccumulator()
 
@@ -186,7 +197,7 @@ class AgentOrchestrator:
                     self.state.begin_task(task)
                     await self.event_emitter.emit(AgentStarted(task))
                 await token.run(self._prepare_task())
-                result = await self._run_loop(token, steering)
+                result = await self._run_loop(token, steering, run_id=run_id)
             except AgentCancelledError as exc:
                 result = self._cancelled(str(exc))
             except RepeatedToolCallError as exc:
@@ -224,6 +235,8 @@ class AgentOrchestrator:
         self,
         cancellation: CancellationToken,
         steering: _SteeringQueue | None = None,
+        *,
+        run_id: str,
     ) -> AgentRunResult:
         for _ in range(self.policy.max_steps):
             cancellation.raise_if_cancelled()
@@ -250,8 +263,7 @@ class AgentOrchestrator:
                 if not message.tool_calls:
                     if steering is not None and steering.has_pending:
                         self.state.no_tool_response_count = 0
-                        continue
-                    if not self.policy.require_explicit_finish:
+                    elif not self.policy.require_explicit_finish:
                         if message.content:
                             return AgentRunResult(
                                 status=RunStatus.COMPLETED,
@@ -265,43 +277,95 @@ class AgentOrchestrator:
                             "chat completion returned empty content",
                         )
 
-                    self.state.no_tool_response_count += 1
-                    if (
-                        self.state.no_tool_response_count
-                        >= self.policy.max_no_tool_responses
-                    ):
-                        return self._failure(
-                            StopReason.MAX_NO_TOOL_RESPONSES,
-                            "explicit-finish mode produced plain text without a "
-                            "completing tool call "
-                            f"{self.state.no_tool_response_count} "
-                            "consecutive times",
-                        )
-                    continue
-
-                self.state.no_tool_response_count = 0
-                tool_result = await self._execute_tool_calls(
-                    message,
-                    cancellation,
-                )
-                self.state.add_messages(list(tool_result.messages))
-                if tool_result.cancelled:
-                    raise AgentCancelledError(
-                        tool_result.error
-                        or cancellation.reason
-                        or "agent run was aborted"
+                    else:
+                        self.state.no_tool_response_count += 1
+                        if (
+                            self.state.no_tool_response_count
+                            >= self.policy.max_no_tool_responses
+                        ):
+                            return self._failure(
+                                StopReason.MAX_NO_TOOL_RESPONSES,
+                                "explicit-finish mode produced plain text without a "
+                                "completing tool call "
+                                f"{self.state.no_tool_response_count} "
+                                "consecutive times",
+                            )
+                else:
+                    self.state.no_tool_response_count = 0
+                    tool_result = await self._execute_tool_calls(
+                        message,
+                        cancellation,
                     )
-                terminal_result = self._terminal_tool_result(tool_result)
-                if terminal_result is not None:
-                    return terminal_result
+                    self.state.add_messages(list(tool_result.messages))
+                    if tool_result.cancelled:
+                        raise AgentCancelledError(
+                            tool_result.error
+                            or cancellation.reason
+                            or "agent run was aborted"
+                        )
+                    terminal_result = self._terminal_tool_result(tool_result)
+                    if terminal_result is not None:
+                        return terminal_result
             finally:
                 await self.event_emitter.emit(TurnCompleted(turn))
+
+            behavior_result = await self._evaluate_after_turn(
+                run_id=run_id,
+                turn=turn,
+                response=message,
+                cancellation=cancellation,
+            )
+            if behavior_result is not None:
+                return behavior_result
 
         return self._failure(
             StopReason.MAX_STEPS,
             f"agent {self.agent_id!r} did not finish within "
             f"{self.policy.max_steps} steps",
         )
+
+    async def _evaluate_after_turn(
+        self,
+        *,
+        run_id: str,
+        turn: int,
+        response: AssistantMessage,
+        cancellation: CancellationToken,
+    ) -> AgentRunResult | None:
+        for hook in self.behavior_hooks:
+            snapshot = TurnSnapshot(
+                agent_id=self.agent_id,
+                run_id=run_id,
+                turn=turn,
+                task=self.state.task,
+                response=response,
+                usage=self._usage.snapshot(),
+                messages=self.state.messages,
+            )
+            try:
+                decision = await cancellation.run(
+                    hook.after_turn(snapshot, cancellation=cancellation)
+                )
+                if decision is not None and not isinstance(decision, BehaviorDecision):
+                    raise TypeError("after_turn must return BehaviorDecision or None")
+            except (AgentCancelledError, asyncio.CancelledError):
+                raise
+            except Exception as exc:
+                raise BehaviorHookError(hook, exc) from exc
+
+            if decision is not None and decision.action is BehaviorAction.STOP:
+                return AgentRunResult(
+                    status=RunStatus.COMPLETED,
+                    stop_reason=StopReason.BEHAVIOR_STOP,
+                    turns=self.state.turn,
+                    output=(
+                        decision.output
+                        if decision.output is not None
+                        else response.content
+                    ),
+                    usage=self._usage.snapshot(),
+                )
+        return None
 
     async def _chat_next_turn(
         self,
@@ -560,17 +624,39 @@ class AgentOrchestrator:
         result_messages: list[dict[str, Any]] = []
 
         tool_calls = message.tool_calls or ()
-        for index, tool_call in enumerate(tool_calls):
-            tool_result = await self.tool_runtime.execute_tool_call(
-                tool_call,
-                cancellation=cancellation,
-            )
+        index = 0
+        while index < len(tool_calls):
+            tool_call = tool_calls[index]
+            next_index = index + 1
+            if (
+                self.policy.parallel_tool_calls
+                and self.tool_runtime.tool_effect(tool_call.name)
+                is ToolEffect.READ_ONLY
+            ):
+                while (
+                    next_index < len(tool_calls)
+                    and self.tool_runtime.tool_effect(tool_calls[next_index].name)
+                    is ToolEffect.READ_ONLY
+                ):
+                    next_index += 1
+
+            batch = tool_calls[index:next_index]
+            if len(batch) > 1:
+                tool_result = await self._execute_read_only_tool_calls(
+                    batch,
+                    cancellation,
+                )
+            else:
+                tool_result = await self.tool_runtime.execute_tool_call(
+                    tool_call,
+                    cancellation=cancellation,
+                )
             result_messages.extend(tool_result.messages)
             if tool_result.cancelled:
                 reason = (
                     tool_result.error or cancellation.reason or "agent run was aborted"
                 )
-                for pending_call in tool_calls[index + 1 :]:
+                for pending_call in tool_calls[next_index:]:
                     pending_result = await self.tool_runtime.cancel_tool_call(
                         pending_call,
                         reason=reason,
@@ -587,7 +673,122 @@ class AgentOrchestrator:
                     control=tool_result.control,
                     output=tool_result.output,
                 )
+            index = next_index
 
+        return ToolCallResult(tuple(result_messages))
+
+    async def _execute_read_only_tool_calls(
+        self,
+        tool_calls: tuple[ModelToolCall, ...],
+        cancellation: CancellationToken,
+    ) -> ToolCallResult:
+        """Run safe calls concurrently while committing results in source order."""
+
+        result_messages: list[dict[str, Any]] = []
+        limit = self.policy.max_parallel_tool_calls or len(tool_calls)
+        offset = 0
+        while offset < len(tool_calls):
+            batch = tool_calls[offset : offset + limit]
+            prepared = await self.tool_runtime.prepare_parallel_tool_calls(batch)
+            if not prepared:
+                return await self._execute_sequential_tool_calls(
+                    tool_calls[offset:],
+                    cancellation,
+                    prefix=result_messages,
+                )
+
+            results = await asyncio.gather(
+                *(
+                    self.tool_runtime.execute_tool_call(
+                        tool_call,
+                        cancellation=cancellation,
+                        prepared=True,
+                        defer_completion=True,
+                    )
+                    for tool_call in batch
+                )
+            )
+            for tool_call, result in zip(batch, results, strict=True):
+                await self.tool_runtime.complete_tool_call(tool_call, result)
+                result_messages.extend(result.messages)
+
+            cancelled = next((result for result in results if result.cancelled), None)
+            if cancelled is not None:
+                reason = (
+                    cancelled.error
+                    or cancellation.reason
+                    or "agent run was aborted"
+                )
+                for pending_call in tool_calls[offset + len(batch) :]:
+                    pending_result = await self.tool_runtime.cancel_tool_call(
+                        pending_call,
+                        reason=reason,
+                    )
+                    result_messages.extend(pending_result.messages)
+                return ToolCallResult(
+                    tuple(result_messages),
+                    error=reason,
+                    cancelled=True,
+                )
+
+            terminal = next(
+                (
+                    result
+                    for result in results
+                    if result.control is not ToolControl.CONTINUE
+                ),
+                None,
+            )
+            if terminal is not None:
+                reason = "skipped after a terminal read-only tool result"
+                for pending_call in tool_calls[offset + len(batch) :]:
+                    pending_result = await self.tool_runtime.cancel_tool_call(
+                        pending_call,
+                        reason=reason,
+                    )
+                    result_messages.extend(pending_result.messages)
+                return ToolCallResult(
+                    tuple(result_messages),
+                    control=terminal.control,
+                    output=terminal.output,
+                )
+            offset += len(batch)
+
+        return ToolCallResult(tuple(result_messages))
+
+    async def _execute_sequential_tool_calls(
+        self,
+        tool_calls: tuple[ModelToolCall, ...],
+        cancellation: CancellationToken,
+        *,
+        prefix: list[dict[str, Any]] | None = None,
+    ) -> ToolCallResult:
+        result_messages = list(prefix or ())
+        for index, tool_call in enumerate(tool_calls):
+            result = await self.tool_runtime.execute_tool_call(
+                tool_call,
+                cancellation=cancellation,
+            )
+            result_messages.extend(result.messages)
+            if result.cancelled:
+                reason = result.error or cancellation.reason or "agent run was aborted"
+                for pending_call in tool_calls[index + 1 :]:
+                    pending_result = await self.tool_runtime.cancel_tool_call(
+                        pending_call,
+                        reason=reason,
+                    )
+                    result_messages.extend(pending_result.messages)
+                return ToolCallResult(
+                    tuple(result_messages),
+                    error=reason,
+                    cancelled=True,
+                )
+            if result.control is not ToolControl.CONTINUE:
+                return ToolCallResult(
+                    tuple(result_messages),
+                    control=result.control,
+                    output=result.output,
+                )
         return ToolCallResult(tuple(result_messages))
 
     def _cancelled(self, error: str) -> AgentRunResult:

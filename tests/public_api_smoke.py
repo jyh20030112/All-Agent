@@ -29,6 +29,11 @@ def main() -> None:
 
     required_exports = {
         "BaseAgent",
+        "BehaviorAction",
+        "BehaviorDecision",
+        "BehaviorHook",
+        "BehaviorHookError",
+        "TurnSnapshot",
         "AgentOrchestrator",
         "AgentRunResult",
         "ModelAdapter",

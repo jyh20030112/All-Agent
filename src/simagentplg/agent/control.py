@@ -63,6 +63,7 @@ _CONTINUABLE_STOP_REASONS = frozenset(
     {
         StopReason.TEXT_RESPONSE,
         StopReason.TOOL_COMPLETION,
+        StopReason.BEHAVIOR_STOP,
         StopReason.EMPTY_RESPONSE,
         StopReason.MAX_STEPS,
         StopReason.MAX_NO_TOOL_RESPONSES,
