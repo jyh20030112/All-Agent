@@ -229,7 +229,7 @@ class ToolRuntime:
         if not self._started:
             await self.startup()
 
-        self._get_handler(tool_name)
+        handler = self._get_handler(tool_name)
         if self._tool_chain is None:
             raise RuntimeError("tool middleware chain is not initialized")
         token = cancellation or CancellationSource().token
@@ -240,6 +240,7 @@ class ToolRuntime:
             tool_call_id=tool_call_id,
             cancellation=token,
             progress=progress,
+            tool_definition=self._get_tool_definition(handler, tool_name),
         )
         return await token.run(self._tool_chain(context))
 
@@ -397,6 +398,21 @@ class ToolRuntime:
             raise KeyError(
                 f"unknown tool {tool_name!r}; available tools: {available}"
             ) from exc
+
+    @staticmethod
+    def _get_tool_definition(
+        handler: BaseHandler,
+        tool_name: str,
+    ) -> ToolDefinition:
+        for definition in handler.tool_definitions:
+            if definition.name == tool_name:
+                effect = handler.tool_effect(tool_name)
+                return (
+                    definition
+                    if definition.effect is effect
+                    else definition.with_effect(effect)
+                )
+        raise KeyError(f"handler has no definition for tool {tool_name!r}")
 
     async def _dispatch_handler(self, context: ToolCallContext) -> StepOutcome:
         handler = self._get_handler(context.tool_name)

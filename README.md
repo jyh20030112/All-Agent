@@ -22,6 +22,8 @@ Requires Python 3.12 or newer.
 - Composable `BaseHandler` and `MethodToolHandler` tool contracts
 - `ToolRuntime` lifecycle, routing, middleware, and repeat-call protection
 - Generic `ToolMiddleware` interception
+- Optional fail-closed Tool Execution Policy middleware with approval and
+  atomic per-run call limits
 - Structured, cancellable Tool Progress events
 - Provider-neutral token Usage and per-run budget guards
 - Context pressure estimates, independent window budgets, and non-mutating
@@ -719,8 +721,7 @@ protocol.
 
 ## Tool middleware
 
-`ToolMiddleware` decorates a tool execution without owning concrete tool
-policy:
+`ToolMiddleware` is the single interception chain around tool execution:
 
 ```python
 from simagentplg import ToolMiddleware
@@ -734,8 +735,67 @@ class AuditMiddleware(ToolMiddleware):
         return result
 ```
 
-Approval UI and shell-specific risk policies should be implemented by the
-derived agent, not by the core.
+The optional `ToolPolicyMiddleware` is one concrete middleware built on that
+same chain. It does not add a second policy path or a special `BaseAgent`
+parameter:
+
+```python
+from simagentplg import (
+    RuleBasedToolPolicy,
+    ToolApprovalDecision,
+    ToolEffect,
+    ToolPolicyAction,
+    ToolPolicyMiddleware,
+    ToolPolicyRule,
+)
+
+
+class ConsoleApprover:
+    async def approve(self, request):
+        # A real application can bridge this request to its UI or RPC layer.
+        return ToolApprovalDecision(approved=False, reason="operator denied")
+
+
+policy = RuleBasedToolPolicy(
+    (
+        ToolPolicyRule(
+            rule_id="approve-side-effects",
+            action=ToolPolicyAction.REQUIRE_APPROVAL,
+            effects=frozenset({ToolEffect.SIDE_EFFECTING}),
+            max_calls_per_run=5,
+            reason="this tool can change external state",
+        ),
+        ToolPolicyRule(
+            rule_id="allow-reads",
+            action=ToolPolicyAction.ALLOW,
+            effects=frozenset({ToolEffect.READ_ONLY}),
+            max_calls_per_run=20,
+        ),
+    ),
+    default_action=ToolPolicyAction.DENY,
+)
+
+agent = BaseAgent(
+    model,
+    agent_id="policy-agent",
+    handlers=[handler],
+    middlewares=[
+        ToolPolicyMiddleware(policy, approver=ConsoleApprover()),
+        AuditMiddleware(),
+    ],
+)
+```
+
+Rules use ordered, first-match semantics and may select exact tool names,
+`ToolEffect`, and a synchronous or asynchronous `when(context)` predicate.
+`max_calls_per_run` reserves attempts atomically, including parallel read-only
+calls, and resets at each Agent Run start. Approval is fail-closed: a missing
+approver, an exception, an invalid decision, or a denied request returns
+`ToolControl.REJECT` without invoking the handler. Rejection payloads include
+the tool, safe reason, and matching `rule_id`, but never echo arguments.
+
+Core supplies the policy/approval protocol, not an approval UI or
+shell/filesystem-specific risk rules. Those remain application concerns.
 
 ## MCP tools
 
@@ -900,7 +960,7 @@ The package root exports:
 - Context: `AgentContextBuilder`, `ContextBuildResult`, `ContextBudget`, `ContextUsageEstimate`, `CompactionPolicy`, `AutoCompactionPolicy`, `CompactionDecision`, `CompactionPreparation`, `MessageTokenEstimator`, `estimate_context_usage`, `prepare_compaction`
 - Compaction: `CompactionRuntime`, `Compactor`, `ModelCompactor`, `CompactionContextBuilder`, `CompactorOutput`, `CompactionRequest`, `CompactionResult`, `CompactionStatus`, `CompactionTrigger`, `SummaryEntry`
 - Tools: `ToolDefinition`, `ToolDefinitionError`, `ToolEffect`, `StepOutcome`, `ToolControl`, `ToolProgressUpdate`, `ToolProgressReporter`, `BaseHandler`, `MethodToolHandler`, `McpToolHandler`
-- Middleware: `Middleware`, `ToolMiddleware`, `ToolCallContext`, `ToolNext`
+- Middleware: `Middleware`, `ToolMiddleware`, `ToolCallContext`, `ToolNext`, `ToolExecutionPolicy`, `RuleBasedToolPolicy`, `ToolPolicyRule`, `ToolPolicyPredicate`, `ToolPolicyAction`, `ToolPolicyDecision`, `ToolPolicyMiddleware`, `ToolApprover`, `ToolApprovalRequest`, `ToolApprovalDecision`
 - Extensions: `McpServerManager`, `SkillManager`
 
 ## License

@@ -21,6 +21,7 @@ Middleware、MCP 和 Skill 等运行机制；Shell、文件编辑、Git、审批
 - 可组合的 `BaseHandler` 和 `MethodToolHandler` 工具协议
 - `ToolRuntime` 生命周期、路由、Middleware 和重复调用保护
 - 通用 `ToolMiddleware` 拦截机制
+- 可选的 fail-closed 工具执行策略 Middleware、审批协议和 Run 级原子调用限额
 - 类型化生命周期事件、Text / Thinking Streaming 和 Tool Progress
 - Run Cancellation、`abort()`、Steering Safe Point 与 `wait_for_idle()` 终态屏障
 - Follow-up Run Chain、Continue Safe Point 和 `after_turn` Behavior Hooks
@@ -572,7 +573,7 @@ StepOutcome(data, control=ToolControl.CANCEL)
 
 ## Tool Middleware
 
-`ToolMiddleware` 用于装饰工具执行，但 Core 不包含具体工具策略：
+`ToolMiddleware` 是工具执行外围唯一的拦截链：
 
 ```python
 from simagentplg import ToolMiddleware
@@ -586,7 +587,64 @@ class AuditMiddleware(ToolMiddleware):
         return result
 ```
 
-审批 UI 和 Shell 风险规则应由派生 Agent 实现，而不是放在 Core 中。
+可选的 `ToolPolicyMiddleware` 是建立在同一条链上的官方具体 Middleware；它不会增加第二条
+Policy 通道，也不会给 `BaseAgent` 增加特殊参数：
+
+```python
+from simagentplg import (
+    RuleBasedToolPolicy,
+    ToolApprovalDecision,
+    ToolEffect,
+    ToolPolicyAction,
+    ToolPolicyMiddleware,
+    ToolPolicyRule,
+)
+
+
+class ConsoleApprover:
+    async def approve(self, request):
+        # 实际应用可以把 Request 转发给自己的 UI 或 RPC 层。
+        return ToolApprovalDecision(approved=False, reason="操作员拒绝")
+
+
+policy = RuleBasedToolPolicy(
+    (
+        ToolPolicyRule(
+            rule_id="approve-side-effects",
+            action=ToolPolicyAction.REQUIRE_APPROVAL,
+            effects=frozenset({ToolEffect.SIDE_EFFECTING}),
+            max_calls_per_run=5,
+            reason="该工具可能修改外部状态",
+        ),
+        ToolPolicyRule(
+            rule_id="allow-reads",
+            action=ToolPolicyAction.ALLOW,
+            effects=frozenset({ToolEffect.READ_ONLY}),
+            max_calls_per_run=20,
+        ),
+    ),
+    default_action=ToolPolicyAction.DENY,
+)
+
+agent = BaseAgent(
+    model,
+    agent_id="policy-agent",
+    handlers=[handler],
+    middlewares=[
+        ToolPolicyMiddleware(policy, approver=ConsoleApprover()),
+        AuditMiddleware(),
+    ],
+)
+```
+
+规则按声明顺序采用 first-match 语义，可以匹配精确工具名、`ToolEffect`，也可以提供同步或
+异步的 `when(context)` 条件。`max_calls_per_run` 会原子预留调用次数，能覆盖并行只读调用，
+并在每个 Agent Run 开始时重置。审批默认 fail-closed：没有 Approver、发生异常、返回非法
+结果或明确拒绝时，都会返回 `ToolControl.REJECT`，Handler 绝不会执行。拒绝载荷包含工具名、
+安全的原因和匹配的 `rule_id`，不会回显参数。
+
+Core 只提供策略和审批协议，不提供审批 UI，也不内置 Shell、文件系统等领域风险规则；这些
+仍由具体应用负责。
 
 ## MCP 工具
 
@@ -732,7 +790,7 @@ git push origin v0.5.0
 - Context：`AgentContextBuilder`、`ContextBuildResult`、`ContextBudget`、`ContextUsageEstimate`、`CompactionPolicy`、`AutoCompactionPolicy`、`CompactionDecision`、`CompactionPreparation`、`MessageTokenEstimator`
 - Compaction：`CompactionRuntime`、`Compactor`、`ModelCompactor`、`CompactionContextBuilder`、`CompactorOutput`、`CompactionRequest`、`CompactionResult`、`CompactionStatus`、`CompactionTrigger`、`SummaryEntry`
 - Tool：`ToolDefinition`、`ToolDefinitionError`、`ToolEffect`、`StepOutcome`、`ToolControl`、`ToolProgressReporter`、`ToolProgressUpdate`、`BaseHandler`、`MethodToolHandler`、`McpToolHandler`
-- Middleware：`Middleware`、`ToolMiddleware`、`ToolCallContext`、`ToolNext`
+- Middleware：`Middleware`、`ToolMiddleware`、`ToolCallContext`、`ToolNext`、`ToolExecutionPolicy`、`RuleBasedToolPolicy`、`ToolPolicyRule`、`ToolPolicyPredicate`、`ToolPolicyAction`、`ToolPolicyDecision`、`ToolPolicyMiddleware`、`ToolApprover`、`ToolApprovalRequest`、`ToolApprovalDecision`
 - Event：`AgentEvent`、`AgentEventSink`、`AgentStarted`、`AgentContinued`、`TurnStarted`、`MessageCompleted`、`ToolStarted`、`ToolProgressed`、`ToolCompleted`、`TurnCompleted`、`AgentFinished`
 - 扩展：`McpServerManager`、`SkillManager`
 

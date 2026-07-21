@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from simagentplg.agent.cancellation import CancellationToken
     from simagentplg.agent.state import AgentState
     from simagentplg.agent.types import ToolProgressReporter
+    from simagentplg.handlers.definition import ToolDefinition
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +24,7 @@ class ToolCallContext:
     tool_call_id: str | None = None
     cancellation: CancellationToken | None = None
     progress: ToolProgressReporter | None = None
+    tool_definition: ToolDefinition | None = None
 
 
 ToolNext = Callable[[ToolCallContext], Awaitable[StepOutcome]]
