@@ -149,6 +149,9 @@ class ToolRuntime:
                 if self._tool_routes
                 else []
             )
+            tool_definitions = self.tool_definitions
+            for middleware in self._active_middlewares:
+                middleware.configure_tools(tool_definitions)
             for middleware in self._active_middlewares:
                 await middleware.startup()
                 started_middlewares.append(middleware)

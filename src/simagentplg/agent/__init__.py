@@ -113,6 +113,8 @@ from simagentplg.middleware import (
     ToolPolicyMiddleware,
     ToolPolicyPredicate,
     ToolPolicyRule,
+    ToolSchemaConfigurationError,
+    ToolSchemaValidationMiddleware,
     compose_tool_middlewares,
     format_tool_call_preview,
 )
@@ -214,6 +216,8 @@ __all__ = [
     "ToolApprover",
     "ToolApprovalRequest",
     "ToolApprovalDecision",
+    "ToolSchemaConfigurationError",
+    "ToolSchemaValidationMiddleware",
     "compose_tool_middlewares",
     "format_tool_call_preview",
 ]

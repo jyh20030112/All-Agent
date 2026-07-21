@@ -48,6 +48,8 @@ def main() -> None:
         "ToolApprover",
         "ToolApprovalRequest",
         "ToolApprovalDecision",
+        "ToolSchemaConfigurationError",
+        "ToolSchemaValidationMiddleware",
         "ToolDefinition",
         "ToolEffect",
         "McpToolHandler",

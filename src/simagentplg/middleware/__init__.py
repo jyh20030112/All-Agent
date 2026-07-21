@@ -20,6 +20,10 @@ from simagentplg.middleware.policy import (
     ToolPolicyPredicate,
     ToolPolicyRule,
 )
+from simagentplg.middleware.validation import (
+    ToolSchemaConfigurationError,
+    ToolSchemaValidationMiddleware,
+)
 
 __all__ = [
     "Middleware",
@@ -38,4 +42,6 @@ __all__ = [
     "ToolPolicyMiddleware",
     "ToolPolicyPredicate",
     "ToolPolicyRule",
+    "ToolSchemaConfigurationError",
+    "ToolSchemaValidationMiddleware",
 ]

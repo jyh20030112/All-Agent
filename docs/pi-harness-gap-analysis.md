@@ -2,7 +2,7 @@
 
 > 更新日期：2026-07-22
 >
-> SimAgentPlg 基线：`bf6a676` 后的 Core 能力工作树，项目版本 `0.5.0`
+> SimAgentPlg 基线：`4864804` 后的 Core 能力工作树，项目版本 `0.5.0`
 >
 > Pi 子模块基线：`f4e9ca74`
 >
@@ -30,6 +30,7 @@ SimAgentPlg 已经不只是 Agent Loop。当前实现覆盖了通用 Agent Core 
 - Parallel Read-only Tool Calls、显式 Side-effect 属性与确定性结果提交
 - OpenAI-first Canonical `ToolDefinition`、强类型校验与旧字典兼容视图
 - 基于现有 Middleware 链的 Tool Execution Policy、异步审批与并发安全 Run 限额
+- Policy 前的本地 Tool Argument JSON Schema Validation 与安全错误载荷
 - Python 3.12 / 3.13 CI、构建 smoke test 与 PyPI Trusted Publishing CD
 
 因此，`BaseAgent` 已经是一个可独立使用的轻量 Harness 组装根，而不再只是
@@ -39,8 +40,8 @@ SimAgentPlg 已经不只是 Agent Loop。当前实现覆盖了通用 Agent Core 
 
 1. **行为控制面**：Steering、Follow-up、Continue 与 `after_turn` Hook 基础版已完成；
    `before_model` 等更广义行为注入仍未实现。
-2. **工具调度**：只读 Tool Call、Canonical Definition 和 Execution Policy 已完成基础版；
-   工具集合刻意保持构造/启动时冻结，不向模型或 Active Run 暴露动态修改能力。
+2. **工具调度**：只读 Tool Call、Canonical Definition、Execution Policy 和本地参数校验已
+   完成基础版；工具集合刻意保持构造/启动时冻结，不向模型或 Active Run 暴露动态修改能力。
 3. **Provider 广度**：当前明确采用 OpenAI-first，仅实现 OpenAI-compatible Adapter；在出现
    真实需求前不建设多 Provider Schema 抽象。
 4. **长 Journal 性能**：写入与读取仍会线性重建索引，需要按实际规模决定索引和归档策略。
@@ -48,7 +49,8 @@ SimAgentPlg 已经不只是 Agent Loop。当前实现覆盖了通用 Agent Core 
    明确留给派生层，当前仓库尚未实现该层。
 
 Session Journal 并发边界、行为控制链、安全并行调度、OpenAI-first Canonical Tool
-Definition 和 Tool Execution Policy 已补齐。Dynamic Tool Set 不进入近期路线。
+Definition、Tool Execution Policy 和参数 Schema Validation 已补齐。Dynamic Tool Set 不进入
+近期路线。
 
 ## 2. 当前架构
 
@@ -82,6 +84,7 @@ BaseAgent
   │     ├── BaseHandler / MethodToolHandler
   │     ├── McpToolHandler
   │     └── ToolMiddleware
+  │           ├── ToolSchemaValidationMiddleware
   │           └── ToolPolicyMiddleware / RuleBasedToolPolicy
   └── SkillManager
 ```
@@ -166,6 +169,7 @@ Usage 和 Provider Error 归一化。只实现 `complete()` 的 Adapter 仍可�
 - 显式 `ToolEffect.READ_ONLY` / `SIDE_EFFECTING`
 - Opt-in Parallel Read-only Batch 与稳定源顺序提交
 - 可选 `ToolPolicyMiddleware`、默认拒绝、异步审批和原子 Run 调用限额
+- 可选 `ToolSchemaValidationMiddleware`、启动时 Schema 编译和安全的参数错误结果
 
 默认仍按顺序执行。启用 `RuntimePolicy.parallel_tool_calls` 后，只有连续且显式标注为
 `READ_ONLY` 的调用才并行；未标注、未知和 `SIDE_EFFECTING` 工具形成串行屏障。开始事件按
@@ -177,6 +181,11 @@ REQUIRE_APPROVAL 决策，`ToolPolicyMiddleware` 通过现有 `ToolMiddleware` �
 Rule-based 基础实现支持精确工具名、`ToolEffect`、同步/异步参数条件和每 Run 调用限额；
 并发只读调用使用原子预留，缺少 Approver、策略/审批异常或非法返回值一律 fail closed。
 Core 只提供审批协议，不包含具体审批 UI 或 Shell/Filesystem 风险规则。
+
+Schema Validation 也是同一 Middleware 链的具体实现。推荐顺序为 Validation、Policy、其他
+Middleware、Handler。它在启动阶段通过 `configure_tools()` 编译静态 Canonical Parameters；
+Schema 配置错误会中止并回滚启动。参数错误使用 `ToolControl.CONTINUE` 返回有界、无参数值的
+JSON Pointer 错误，让模型可以修正；无效调用不会触发 Policy、Approver 或 Handler。
 
 ### 3.3 事件、Streaming 与取消
 
@@ -364,6 +373,7 @@ CD 属于交付能力，不改变 Core Runtime 语义。
 | Continue | `continue()` | 独立 Run + 无新增 User Message + Safe Point | 基础已具备 |
 | Parallel Tool Calls | 默认并行，可强制顺序 | Opt-in 只读并行 + 副作用屏障 | 基础已具备，更保守 |
 | Canonical Tool Definition | 内部强类型定义 | OpenAI-first `ToolDefinition` + 字典兼容 | 基础已具备 |
+| Tool Argument Validation | Provider / Tool 层处理 | 可选本地 JSON Schema Middleware | 已具备 |
 | Dynamic Tool Set | Runtime 可替换 | 构造/启动时冻结 | 刻意延后 |
 | Cancellation | AbortSignal | CancellationToken | 已对齐 |
 | Tool Progress | `onUpdate` | `ToolProgressReporter` | 已具备 |
@@ -446,16 +456,20 @@ Tool Result；外部取消会补齐批次和后续未启动调用；并行批次
 源顺序选择首个 COMPLETE / REJECT / CANCEL。`READ_ONLY` 是 Handler 与 Middleware 对并发安全
 作出的契约，Core 不尝试从名称或参数自动推断副作用。
 
-### 5.6 Tool Middleware 与 Execution Policy
+### 5.6 Tool Middleware、Schema Validation 与 Execution Policy
 
-`ToolMiddleware` 仍是唯一的工具行为拦截协议。`ToolPolicyMiddleware` 是它的标准实现之一，
-与 Audit、Metrics 等 Middleware 使用同一条组合链，不在 Tool Runtime 前后创建额外 Policy
-通道，也不给 `BaseAgent` 增加专用 `tool_policy` 参数。
+`ToolMiddleware` 仍是唯一的工具行为拦截协议。`ToolSchemaValidationMiddleware` 和
+`ToolPolicyMiddleware` 都是它的标准实现，与 Audit、Metrics 等 Middleware 使用同一条组合链，
+不在 Tool Runtime 前后创建额外通道，也不给 `BaseAgent` 增加专用参数。
 
 策略规则属于应用配置，不写入 `ToolDefinition`：Definition 描述工具能力和副作用类别，同一
 工具在不同应用中的权限可以不同。Rule-based 策略采用有序 first-match，推荐 `default=DENY`；
 审批由应用提供异步 `ToolApprover`。拒绝沿用 `ToolControl.REJECT`、`RunStatus.REJECTED` 和现有
 Session Tool Result，Handler 不会收到被拒绝的调用。
+
+Validation 与 Policy 的失败语义不同：结构错误返回普通 Tool Error 并继续模型循环，权限拒绝
+返回 `ToolControl.REJECT` 并终止 Run。Validation 错误只包含 Tool、Code、JSON Pointer、失败
+Keyword 和通用消息；模型提供的参数值不会被复制到结果或 Session。
 
 ## 6. 当前技术边界与风险
 
@@ -507,12 +521,14 @@ Provider 需求，可以在稳定定义外增加 Adapter 转换，而无需现�
 事件按顺序 await，保证确定性和终态屏障，但慢 UI 或网络 Sink 会拖慢 Agent。未来应提供
 有界缓冲 Sink Adapter，而不是在 Core 中创建无界后台任务。
 
-### 6.7 Tool Policy 的边界
+### 6.7 Tool Schema Validation——已完成基础版
 
-第一版 Policy 强制执行权限、领域参数条件、审批和 Run 级调用次数，但不把 Canonical
-`parameters` 当作本地 JSON Schema 执行器。Provider 即使声明 `strict`，弱模型或兼容服务仍
-可能返回结构错误参数；当前这些错误会在 Handler 边界转换为普通 Tool Error。是否增加无额外
-Provider 耦合的本地 Schema Validation，是下一项更值得验证的工具安全能力。
+`ToolSchemaValidationMiddleware` 使用 `jsonschema` 验证 Canonical `parameters`，支持 Schema
+选择的标准 Draft 语义。它是显式可选 Middleware，不改变未注册它的旧 Agent 行为，也不把
+Provider `strict` 当作本地安全边界。
+
+当前不启用外部 Format Checker，也不提供领域语义验证；路径范围、金额上限等约束继续属于
+Tool Policy。远程 Schema Registry、动态 Schema 和自定义 Format 暂不进入 Core。
 
 ## 7. 后续建设顺序
 
@@ -557,6 +573,7 @@ Provider 耦合的本地 Schema Validation，是下一项更值得验证的工�
 - Parallel Tool Calls 与 Side-effect Policy——已完成基础版
 - Canonical Tool Definition——已完成 OpenAI-first 基础版
 - Tool Execution Policy Middleware——已完成基础版
+- Tool Argument Schema Validation Middleware——已完成基础版
 - Dynamic Tool Set——按当前静态工具集设计延后
 - 第二个真实 Provider Adapter——按真实需求延后
 
@@ -575,27 +592,26 @@ CodeAgent
 
 ## 8. 下一步任务建议
 
-Tool Execution Policy 基础版完成后，下一项更适合弱模型安全性的能力是 **本地 Tool Argument
-Validation**，而不是 Dynamic Tool Set。它在调用 Middleware 和 Handler 前使用 Canonical
-`ToolDefinition.parameters` 校验模型参数，阻止类型、必填字段和额外字段错误进入真实工具。
+Tool Argument Validation 完成后，下一项建议是 **Tool Policy Decision Audit Events**。当前
+拒绝结果可以通过 `ToolCompleted` 和 Session Tool Message 审计，但被允许的 Rule、审批请求和
+审批结果没有独立的只读事件，长期运行服务难以回答“为什么这个副作用调用被允许”。
 
 ### 8.1 建议实现范围
 
-1. 在 JSON 解析成功后、Policy 与 Handler 前执行可选的 JSON Schema Validation。
-2. 只验证当前 OpenAI-first Canonical Parameters，不抽象第二种 Provider Schema。
-3. 校验失败返回标准 Tool Error，让模型可以修正参数；不使用 `ToolControl.REJECT`，因为结构
-   错误不等同于权限拒绝。
-4. 提供 Agent 级显式开关，默认行为需根据兼容性测试决定，不静默改变旧 Handler。
-5. 错误结果只暴露安全的字段路径和规则，不回显可能含敏感信息的完整参数。
-6. 并行 Tool Call 必须逐项独立校验，失败项不能调用 Policy、Approver 或 Handler。
+1. 增加只读 `ToolPolicyEvaluated`、`ToolApprovalRequested` 和 `ToolApprovalResolved` 事件。
+2. 事件只包含 `tool_call_id`、Tool Name、Action、`rule_id`、安全 Reason 和审批状态，不包含参数。
+3. 事件由现有 `AgentEventEmitter` 顺序发布，不允许 Event Sink 改写 Policy 决策。
+4. 审批请求和结果必须成对；异常、取消和缺少 Approver 也有明确 Resolution。
+5. 并行调用允许 Policy Event 交错，但最终 Tool Result 和 Session 顺序继续保持确定性。
+6. 是否持久化独立 Policy Journal Record 需显式决定，不能把只读临时事件自动混入历史。
 
 ### 8.2 验收标准
 
-- Required、Type、Enum、Array/Object 边界和 `additionalProperties` 有确定性测试。
-- OpenAI `strict` 开关与本地校验职责清晰，不假设 Provider 一定执行 Schema。
-- 非法参数永远不能到达 Policy/Approver/Handler；合法参数现有行为完全不变。
-- Validation Error 正常写入 Tool Message、Agent History 和 Session Journal。
-- Python 3.12 / 3.13、MCP Legacy Definitions、并行调度和 Public API smoke test 全部通过。
+- 每个 Policy/Approval 决策都有稳定关联的 `run_id`、`tool_call_id` 和事件序号。
+- 允许、拒绝、无 Approver、审批拒绝、审批异常和取消都有确定性事件测试。
+- Event Sink 失败仍被隔离，不得改变工具是否执行。
+- 事件不泄露 Arguments，Session 持久化策略有明确测试和文档。
+- 现有 ToolCompleted、并行提交、Cancellation 和 Policy fail-closed 语义保持不变。
 
-完成参数校验后，再根据真实使用数据决定是否扩展 Policy Decision Event 或领域级规则库；
+完成 Policy 审计事件后，再根据真实使用数据决定是否增加 Tool Output 大小边界或领域级规则库；
 Dynamic Tool Set 和第二个 Provider 继续按需求延后。

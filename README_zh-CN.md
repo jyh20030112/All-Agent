@@ -22,6 +22,7 @@ Middleware、MCP 和 Skill 等运行机制；Shell、文件编辑、Git、审批
 - `ToolRuntime` 生命周期、路由、Middleware 和重复调用保护
 - 通用 `ToolMiddleware` 拦截机制
 - 可选的 fail-closed 工具执行策略 Middleware、审批协议和 Run 级原子调用限额
+- 在 Policy 和 Handler 前执行的可选本地 JSON Schema 参数校验
 - 类型化生命周期事件、Text / Thinking Streaming 和 Tool Progress
 - Run Cancellation、`abort()`、Steering Safe Point 与 `wait_for_idle()` 终态屏障
 - Follow-up Run Chain、Continue Safe Point 和 `after_turn` Behavior Hooks
@@ -646,6 +647,51 @@ agent = BaseAgent(
 Core 只提供策略和审批协议，不提供审批 UI，也不内置 Shell、文件系统等领域风险规则；这些
 仍由具体应用负责。
 
+将 `ToolSchemaValidationMiddleware` 放在 Policy 前，可以保证结构非法的模型参数不会消耗
+Policy 限额、请求审批或到达 Handler：
+
+```python
+from simagentplg import (
+    ToolPolicyMiddleware,
+    ToolSchemaValidationMiddleware,
+)
+
+agent = BaseAgent(
+    model,
+    agent_id="validated-agent",
+    handlers=[handler],
+    middlewares=[
+        ToolSchemaValidationMiddleware(max_errors=8),
+        ToolPolicyMiddleware(policy, approver=approver),
+        AuditMiddleware(),
+    ],
+)
+```
+
+Middleware 会在 Agent 启动阶段编译每个 Canonical `ToolDefinition.parameters` Schema。注册的
+Schema 本身非法时，启动会抛出 `ToolSchemaConfigurationError` 并回滚；模型参数不符合
+Schema 时则返回普通、非终态 Tool Result：
+
+```json
+{
+  "status": "error",
+  "tool": "transfer",
+  "code": "invalid_tool_arguments",
+  "errors": [
+    {
+      "path": "/amount",
+      "keyword": "type",
+      "message": "value does not match the required type"
+    }
+  ]
+}
+```
+
+错误路径使用 JSON Pointer；错误消息只说明失败规则，不回显参数值，`max_errors` 负责限制
+载荷大小。没有 Parameters Schema 的工具保持原行为。Validation 使用
+`ToolControl.CONTINUE`，允许模型修正调用；权限拒绝仍使用独立的终态
+`ToolControl.REJECT`。
+
 ## MCP 工具
 
 MCP 使用相同的 Handler 协议：
@@ -790,7 +836,7 @@ git push origin v0.5.0
 - Context：`AgentContextBuilder`、`ContextBuildResult`、`ContextBudget`、`ContextUsageEstimate`、`CompactionPolicy`、`AutoCompactionPolicy`、`CompactionDecision`、`CompactionPreparation`、`MessageTokenEstimator`
 - Compaction：`CompactionRuntime`、`Compactor`、`ModelCompactor`、`CompactionContextBuilder`、`CompactorOutput`、`CompactionRequest`、`CompactionResult`、`CompactionStatus`、`CompactionTrigger`、`SummaryEntry`
 - Tool：`ToolDefinition`、`ToolDefinitionError`、`ToolEffect`、`StepOutcome`、`ToolControl`、`ToolProgressReporter`、`ToolProgressUpdate`、`BaseHandler`、`MethodToolHandler`、`McpToolHandler`
-- Middleware：`Middleware`、`ToolMiddleware`、`ToolCallContext`、`ToolNext`、`ToolExecutionPolicy`、`RuleBasedToolPolicy`、`ToolPolicyRule`、`ToolPolicyPredicate`、`ToolPolicyAction`、`ToolPolicyDecision`、`ToolPolicyMiddleware`、`ToolApprover`、`ToolApprovalRequest`、`ToolApprovalDecision`
+- Middleware：`Middleware`、`ToolMiddleware`、`ToolCallContext`、`ToolNext`、`ToolExecutionPolicy`、`RuleBasedToolPolicy`、`ToolPolicyRule`、`ToolPolicyPredicate`、`ToolPolicyAction`、`ToolPolicyDecision`、`ToolPolicyMiddleware`、`ToolApprover`、`ToolApprovalRequest`、`ToolApprovalDecision`、`ToolSchemaValidationMiddleware`、`ToolSchemaConfigurationError`
 - Event：`AgentEvent`、`AgentEventSink`、`AgentStarted`、`AgentContinued`、`TurnStarted`、`MessageCompleted`、`ToolStarted`、`ToolProgressed`、`ToolCompleted`、`TurnCompleted`、`AgentFinished`
 - 扩展：`McpServerManager`、`SkillManager`
 

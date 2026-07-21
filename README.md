@@ -24,6 +24,7 @@ Requires Python 3.12 or newer.
 - Generic `ToolMiddleware` interception
 - Optional fail-closed Tool Execution Policy middleware with approval and
   atomic per-run call limits
+- Optional local JSON Schema argument validation before policy and handlers
 - Structured, cancellable Tool Progress events
 - Provider-neutral token Usage and per-run budget guards
 - Context pressure estimates, independent window budgets, and non-mutating
@@ -797,6 +798,54 @@ the tool, safe reason, and matching `rule_id`, but never echo arguments.
 Core supplies the policy/approval protocol, not an approval UI or
 shell/filesystem-specific risk rules. Those remain application concerns.
 
+`ToolSchemaValidationMiddleware` can be placed before policy so structurally
+invalid model arguments never consume policy limits, request approval, or
+reach a handler:
+
+```python
+from simagentplg import (
+    ToolPolicyMiddleware,
+    ToolSchemaValidationMiddleware,
+)
+
+agent = BaseAgent(
+    model,
+    agent_id="validated-agent",
+    handlers=[handler],
+    middlewares=[
+        ToolSchemaValidationMiddleware(max_errors=8),
+        ToolPolicyMiddleware(policy, approver=approver),
+        AuditMiddleware(),
+    ],
+)
+```
+
+The middleware compiles each canonical `ToolDefinition.parameters` schema
+during Agent startup. An invalid registered schema raises
+`ToolSchemaConfigurationError` and rolls back startup. A model argument
+failure instead becomes a normal, non-terminal Tool Result:
+
+```json
+{
+  "status": "error",
+  "tool": "transfer",
+  "code": "invalid_tool_arguments",
+  "errors": [
+    {
+      "path": "/amount",
+      "keyword": "type",
+      "message": "value does not match the required type"
+    }
+  ]
+}
+```
+
+Error paths use JSON Pointer. Messages describe the failed rule without
+echoing argument values, and `max_errors` bounds the payload. Tools without a
+parameters schema pass through unchanged. Validation results use
+`ToolControl.CONTINUE`, so the model can correct its call; permission denial
+remains the distinct terminal `ToolControl.REJECT` path.
+
 ## MCP tools
 
 MCP uses the same handler contract:
@@ -960,7 +1009,7 @@ The package root exports:
 - Context: `AgentContextBuilder`, `ContextBuildResult`, `ContextBudget`, `ContextUsageEstimate`, `CompactionPolicy`, `AutoCompactionPolicy`, `CompactionDecision`, `CompactionPreparation`, `MessageTokenEstimator`, `estimate_context_usage`, `prepare_compaction`
 - Compaction: `CompactionRuntime`, `Compactor`, `ModelCompactor`, `CompactionContextBuilder`, `CompactorOutput`, `CompactionRequest`, `CompactionResult`, `CompactionStatus`, `CompactionTrigger`, `SummaryEntry`
 - Tools: `ToolDefinition`, `ToolDefinitionError`, `ToolEffect`, `StepOutcome`, `ToolControl`, `ToolProgressUpdate`, `ToolProgressReporter`, `BaseHandler`, `MethodToolHandler`, `McpToolHandler`
-- Middleware: `Middleware`, `ToolMiddleware`, `ToolCallContext`, `ToolNext`, `ToolExecutionPolicy`, `RuleBasedToolPolicy`, `ToolPolicyRule`, `ToolPolicyPredicate`, `ToolPolicyAction`, `ToolPolicyDecision`, `ToolPolicyMiddleware`, `ToolApprover`, `ToolApprovalRequest`, `ToolApprovalDecision`
+- Middleware: `Middleware`, `ToolMiddleware`, `ToolCallContext`, `ToolNext`, `ToolExecutionPolicy`, `RuleBasedToolPolicy`, `ToolPolicyRule`, `ToolPolicyPredicate`, `ToolPolicyAction`, `ToolPolicyDecision`, `ToolPolicyMiddleware`, `ToolApprover`, `ToolApprovalRequest`, `ToolApprovalDecision`, `ToolSchemaValidationMiddleware`, `ToolSchemaConfigurationError`
 - Extensions: `McpServerManager`, `SkillManager`
 
 ## License
