@@ -4,7 +4,7 @@ from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from typing import Any
 
-from simagentplg import (
+from ejagent import (
     AgentEvent,
     AssistantMessage,
     BaseAgent,
@@ -178,7 +178,7 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
             ["system", "system", "user", "assistant"],
         )
         summary_message = agent.messages[1]
-        self.assertIn("_simagentplg_summary", summary_message)
+        self.assertIn("_ejagent_summary", summary_message)
         self.assertNotIn("old-call", repr(agent.messages))
         self.assertEqual(
             [type(event.payload) for event in sink.events],
@@ -193,7 +193,7 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
 
         await agent.run(task="continue from the summary")
         sent_summary = model.contexts[0].llm_messages[1]
-        self.assertNotIn("_simagentplg_summary", sent_summary)
+        self.assertNotIn("_ejagent_summary", sent_summary)
         self.assertIn("Conversation summary", sent_summary["content"])
 
     async def test_compactor_failure_keeps_history_unchanged(self) -> None:
@@ -345,7 +345,7 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
             "first summary",
         )
         summary_messages = [
-            message for message in agent.messages if "_simagentplg_summary" in message
+            message for message in agent.messages if "_ejagent_summary" in message
         ]
         self.assertEqual(len(summary_messages), 1)
         assert second.summary is not None
@@ -423,7 +423,7 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
             [message["role"] for message in session.messages],
             ["system", "user", "assistant", "user", "assistant"],
         )
-        self.assertIn("_simagentplg_summary", session.messages[0])
+        self.assertIn("_ejagent_summary", session.messages[0])
 
         resumed_model = QueueModel(["resumed"])
         resumed = BaseAgent(
@@ -435,7 +435,7 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
 
         llm_summary = resumed_model.contexts[0].llm_messages[1]
         self.assertIn("Conversation summary", llm_summary["content"])
-        self.assertNotIn("_simagentplg_summary", llm_summary)
+        self.assertNotIn("_ejagent_summary", llm_summary)
 
     async def test_session_keeps_audit_entries_covered_by_compaction(
         self,

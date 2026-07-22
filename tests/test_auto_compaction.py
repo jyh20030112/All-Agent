@@ -3,7 +3,7 @@ import unittest
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any
 
-from simagentplg import (
+from ejagent import (
     AgentEvent,
     AssistantMessage,
     AssistantTextDelta,
@@ -249,7 +249,7 @@ class AutoCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.error, "summary provider failed")
         self.assertEqual(model.contexts, [])
         self.assertIn("old task", repr(agent.messages))
-        self.assertNotIn("_simagentplg_summary", repr(agent.messages))
+        self.assertNotIn("_ejagent_summary", repr(agent.messages))
 
     async def test_abort_cancels_automatic_compaction(self) -> None:
         model = ScriptedStreamModel([completed()])

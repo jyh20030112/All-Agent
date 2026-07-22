@@ -2,7 +2,7 @@
 
 import asyncio
 
-from simagentplg import BaseAgent, ModelConfig, OpenAIModelAdapter
+from ejagent import BaseAgent, ModelConfig, OpenAIModelAdapter
 
 
 async def main() -> None:

@@ -1,4 +1,4 @@
-# SimAgentPlg Examples
+# EJAgent Core Examples
 
 All examples use the environment variables documented in the project README.
 Copy `.env.example` to `.env` and fill in credentials for an OpenAI-compatible

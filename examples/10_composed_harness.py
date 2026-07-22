@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Mapping
 from typing import Any
 
-from simagentplg import (
+from ejagent import (
     AgentEvent,
     BaseAgent,
     CancellationToken,
@@ -26,7 +26,7 @@ INSPECT_TOOL = {
     "type": "function",
     "function": {
         "name": "inspect_project",
-        "description": "Return current SimAgentPlg Harness metadata.",
+        "description": "Return current EJAgent Core Harness metadata.",
         "parameters": {"type": "object", "properties": {}},
     },
 }
@@ -62,7 +62,7 @@ class HarnessTools(MethodToolHandler):
         self.inspected = True
         return StepOutcome(
             {
-                "agent_core": "SimAgentPlg",
+                "agent_core": "EJAgent Core",
                 "orchestrator": "AgentOrchestrator",
                 "events": "AgentEvent + CompositeAgentEventSink",
                 "session": "SessionRecorder + MemorySessionStorage",

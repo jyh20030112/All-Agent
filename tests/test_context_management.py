@@ -2,10 +2,12 @@ import unittest
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from simagentplg import (
+from ejagent import (
+    AgentContextBuilder,
     AgentEvent,
     AgentFinished,
     AgentStarted,
+    AgentState,
     AssistantMessage,
     BaseAgent,
     CancellationToken,
@@ -51,6 +53,30 @@ class TextModel(ModelAdapter):
 
 
 class ContextManagementTests(unittest.IsolatedAsyncioTestCase):
+    def test_context_builder_strips_current_and_legacy_internal_metadata(self) -> None:
+        state = AgentState(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "summary",
+                    "_ejagent_summary": {"content": "current"},
+                    "_simagentplg_summary": {"content": "legacy"},
+                }
+            ]
+        )
+
+        context = AgentContextBuilder().build(state)
+
+        self.assertEqual(
+            context.agent_messages[0]["_ejagent_summary"], {"content": "current"}
+        )
+        self.assertEqual(
+            context.agent_messages[0]["_simagentplg_summary"],
+            {"content": "legacy"},
+        )
+        self.assertNotIn("_ejagent_summary", context.llm_messages[0])
+        self.assertNotIn("_simagentplg_summary", context.llm_messages[0])
+
     def test_heuristic_is_utf8_aware_and_ignores_usage_metadata(self) -> None:
         estimator = HeuristicMessageTokenEstimator()
         english = {"role": "user", "content": "a" * 40}
@@ -65,8 +91,14 @@ class ContextManagementTests(unittest.IsolatedAsyncioTestCase):
         }
         with_internal_summary = {
             **english,
-            "_simagentplg_summary": {
+            "_ejagent_summary": {
                 "content": "internal metadata must not be counted" * 100,
+            },
+        }
+        with_legacy_internal_summary = {
+            **english,
+            "_simagentplg_summary": {
+                "content": "legacy internal metadata must not be counted" * 100,
             },
         }
 
@@ -81,6 +113,10 @@ class ContextManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             estimator.estimate_message(english),
             estimator.estimate_message(with_internal_summary),
+        )
+        self.assertEqual(
+            estimator.estimate_message(english),
+            estimator.estimate_message(with_legacy_internal_summary),
         )
 
     def test_estimate_without_usage_includes_messages_and_tools(self) -> None:

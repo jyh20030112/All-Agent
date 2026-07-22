@@ -2,7 +2,7 @@
 
 import asyncio
 
-from simagentplg import (
+from ejagent import (
     BaseAgent,
     MemorySessionStorage,
     ModelConfig,
@@ -27,7 +27,7 @@ async def main() -> None:
     try:
         first = await first_agent.run(
             task=(
-                "Store this exact statement and reply only ACK: SimAgentPlg "
+                "Store this exact statement and reply only ACK: EJAgent Core "
                 "uses lifecycle events to build Sessions without coupling "
                 "persistence to the Agent Loop."
             )
@@ -52,7 +52,7 @@ async def main() -> None:
     resumed_agent.reset(saved.messages)
     try:
         resumed = await resumed_agent.run(
-            task="Repeat the exact stored SimAgentPlg statement."
+            task="Repeat the exact stored EJAgent Core statement."
         )
         print(f"resumed response: {resumed.output}")
     finally:

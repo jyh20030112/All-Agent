@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from simagentplg import AgentSession, JsonlSessionStorage
+from ejagent import AgentSession, JsonlSessionStorage
 
 
 def journal_size(directory: str) -> int:

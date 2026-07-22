@@ -3,7 +3,7 @@ from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
 
-from simagentplg import (
+from ejagent import (
     AgentContextBuilder,
     AgentEvent,
     AgentState,

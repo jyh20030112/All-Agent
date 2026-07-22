@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Mapping
 from typing import Any
 
-from simagentplg import (
+from ejagent import (
     BaseAgent,
     CancellationToken,
     MethodToolHandler,

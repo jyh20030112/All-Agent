@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 
-from simagentplg import (
+from ejagent import (
     AgentEvent,
     BaseAgent,
     CompactionCompleted,
@@ -30,7 +30,7 @@ def build_compaction_context(request: CompactionRequest) -> ContextBuildResult:
         {
             key: value
             for key, value in message.items()
-            if key not in {"usage", "_simagentplg_summary"}
+            if key not in {"usage", "_ejagent_summary", "_simagentplg_summary"}
         }
         for message in request.preparation.messages_to_summarize
     ]

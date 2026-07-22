@@ -1,11 +1,12 @@
-# SimAgentPlg
+# EJAgent Core
 
 [English](README.md) | [简体中文](README_zh-CN.md)
 
-SimAgentPlg is a lightweight core for building stateful, extensible agents on
-OpenAI-compatible model APIs. It provides the runtime mechanism—state,
-orchestration, context construction, tool dispatch, middleware, MCP, and
-skills—while derived agents own concrete tools such as shell, file editing,
+EJAgent Core is an OpenAI-first Agent Harness Core built around eight capability
+areas: execution, control, extensibility, safety, context management, durable
+history, branching, and observability. It provides the runtime mechanisms for
+state, orchestration, context construction, tool dispatch, middleware, MCP, and
+skills, while derived agents own concrete tools such as shell, file editing,
 Git, or explicit completion.
 
 Requires Python 3.12 or newer.
@@ -48,15 +49,27 @@ Derived agents should provide equivalent implementations when needed.
 ## Installation
 
 ```bash
-uv sync
+pip install ejagent-core
+# or, for a source checkout: uv sync
 ```
 
 MCP support is optional. Install its extra only when the agent uses MCP:
 
 ```bash
 uv sync --extra mcp
-# or: pip install "SimAgentPlg[mcp]"
+# or: pip install "ejagent-core[mcp]"
 ```
+
+Version 0.6.0 renames the PyPI distribution to `ejagent-core` and the Python
+import package to `ejagent`:
+
+```python
+from ejagent import BaseAgent
+```
+
+The former `simagentplg` import is not retained as a compatibility alias.
+Existing JSONL Sessions remain readable; legacy internal message metadata is
+filtered from provider requests during restoration.
 
 ## Configuration
 
@@ -75,7 +88,7 @@ LLM_INCLUDE_USAGE=true
 Configuration can also be supplied directly:
 
 ```python
-from simagentplg import ModelConfig
+from ejagent import ModelConfig
 
 config = ModelConfig(
     model="deepseek-v4-flash",
@@ -95,7 +108,7 @@ provider-neutral stream events and the normalized `AssistantMessage` contract.
 Conversation history is preserved across calls:
 
 ```python
-from simagentplg import BaseAgent, ModelConfig, OpenAIModelAdapter
+from ejagent import BaseAgent, ModelConfig, OpenAIModelAdapter
 
 agent = BaseAgent(
     OpenAIModelAdapter(ModelConfig.from_env()),
@@ -246,7 +259,7 @@ next Provider request. It is deliberately separate from read-only Event Sinks
 and Tool Middleware:
 
 ```python
-from simagentplg import BehaviorDecision
+from ejagent import BehaviorDecision
 
 
 class StopAfterFirstToolTurn:
@@ -282,7 +295,7 @@ must explicitly declare a tool `READ_ONLY`, and the Runtime Policy must enable
 parallel calls:
 
 ```python
-from simagentplg import (
+from ejagent import (
     MethodToolHandler,
     RuntimePolicy,
     ToolDefinition,
@@ -337,7 +350,7 @@ the handler and its middleware, not an automatic side-effect inference.
 text and provisional reasoning are observed through typed Delta events:
 
 ```python
-from simagentplg import AssistantThinkingDelta, AssistantTextDelta
+from ejagent import AssistantThinkingDelta, AssistantTextDelta
 
 
 class ConsoleSink:
@@ -383,7 +396,7 @@ optional `CompactionPolicy` to assess the complete provider request before each
 model call:
 
 ```python
-from simagentplg import CompactionPolicy, ContextBudget
+from ejagent import CompactionPolicy, ContextBudget
 
 context_policy = CompactionPolicy(
     ContextBudget(
@@ -417,7 +430,7 @@ Automatic behavior is opt-in and reuses the same `CompactionPolicy` and
 `Compactor`:
 
 ```python
-from simagentplg import AutoCompactionPolicy
+from ejagent import AutoCompactionPolicy
 
 agent = BaseAgent(
     model,
@@ -494,7 +507,7 @@ or prompt.
 record for each accepted lifecycle mutation:
 
 ```python
-from simagentplg import JsonlSessionStorage, SessionRecorder
+from ejagent import JsonlSessionStorage, SessionRecorder
 
 storage = JsonlSessionStorage("./sessions")
 recorder = SessionRecorder(session_id="project-42", storage=storage)
@@ -568,7 +581,7 @@ semantics or provide another `SessionTreeStorage` backend.
 Tool availability and completion policy are independent:
 
 ```python
-from simagentplg import RuntimePolicy
+from ejagent import RuntimePolicy
 
 policy = RuntimePolicy(
     max_steps=20,
@@ -607,7 +620,7 @@ an async `do_add()` method:
 from collections.abc import Mapping
 from typing import Any
 
-from simagentplg import (
+from ejagent import (
     CancellationToken,
     MethodToolHandler,
     StepOutcome,
@@ -677,7 +690,7 @@ Long-running tools can optionally accept a scoped `progress` reporter. Existing
 `do_*` methods that do not declare this keyword remain compatible:
 
 ```python
-from simagentplg import ToolProgressReporter, ToolProgressUpdate
+from ejagent import ToolProgressReporter, ToolProgressUpdate
 
 
 async def do_index(
@@ -707,7 +720,7 @@ and are ignored after `ToolCompleted`. They never change `StepOutcome` or
 Tool payload and runtime control are separate:
 
 ```python
-from simagentplg import StepOutcome, ToolControl
+from ejagent import StepOutcome, ToolControl
 
 StepOutcome(data)  # continue the provider-tool loop
 StepOutcome(data, control=ToolControl.COMPLETE)
@@ -725,7 +738,7 @@ protocol.
 `ToolMiddleware` is the single interception chain around tool execution:
 
 ```python
-from simagentplg import ToolMiddleware
+from ejagent import ToolMiddleware
 
 
 class AuditMiddleware(ToolMiddleware):
@@ -741,7 +754,7 @@ same chain. It does not add a second policy path or a special `BaseAgent`
 parameter:
 
 ```python
-from simagentplg import (
+from ejagent import (
     RuleBasedToolPolicy,
     ToolApprovalDecision,
     ToolEffect,
@@ -803,7 +816,7 @@ invalid model arguments never consume policy limits, request approval, or
 reach a handler:
 
 ```python
-from simagentplg import (
+from ejagent import (
     ToolPolicyMiddleware,
     ToolSchemaValidationMiddleware,
 )
@@ -851,7 +864,7 @@ remains the distinct terminal `ToolControl.REJECT` path.
 MCP uses the same handler contract:
 
 ```python
-from simagentplg import (
+from ejagent import (
     BaseAgent,
     McpToolHandler,
     ModelConfig,
@@ -876,7 +889,7 @@ Skills are prompt and resource extensions independent of handler tools:
 ```python
 from pathlib import Path
 
-from simagentplg import BaseAgent, ModelConfig, OpenAIModelAdapter
+from ejagent import BaseAgent, ModelConfig, OpenAIModelAdapter
 
 agent = BaseAgent(
     OpenAIModelAdapter(ModelConfig.from_env()),
@@ -903,7 +916,7 @@ examples/skills/
 
 ## Core boundary
 
-SimAgentPlg core owns mechanisms:
+EJAgent Core owns mechanisms:
 
 ```text
 Orchestration + State + Context + Runtime Policy + Run Result
@@ -975,19 +988,22 @@ environment and PyPI publisher, merge the release commit into `main`, then push
 a version-matching tag:
 
 ```text
-PyPI project: SimAgentPlg
+PyPI project: ejagent-core
 GitHub owner: jyh20030112
-Repository: SimAgentPlg
+Repository: SimAgentPlg (rename separately)
 Workflow: release.yml
 Environment: pypi
 ```
+
+Because `ejagent-core` is a new PyPI project name, configure its Trusted
+Publisher before creating the `v0.6.0` release tag.
 
 Protect the GitHub `pypi` environment with required reviewers and restrict
 creation of `v*` tags to maintainers. Then publish with:
 
 ```bash
-git tag v0.5.0
-git push origin v0.5.0
+git tag v0.6.0
+git push origin v0.6.0
 ```
 
 The workflow rejects tags whose commit is not on `main` or whose value does not

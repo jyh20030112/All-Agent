@@ -5,7 +5,7 @@ import os
 from collections.abc import Mapping
 from typing import Any
 
-from simagentplg import (
+from ejagent import (
     AgentEvent,
     BaseAgent,
     CancellationToken,

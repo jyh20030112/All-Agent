@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from simagentplg import (
+from ejagent import (
     SESSION_SCHEMA_VERSION,
     AgentRunResult,
     AgentSession,
@@ -182,7 +182,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from simagentplg import (
+from ejagent import (
     JsonlSessionStorage,
     SessionConflictError,
     SessionRecordDraft,
@@ -392,7 +392,7 @@ class SessionPersistenceTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch(
-                    "simagentplg.session.jsonl.os.write",
+                    "ejagent.session.jsonl.os.write",
                     side_effect=OSError("disk failure"),
                 ),
                 self.assertRaises(SessionStorageError),
@@ -410,7 +410,7 @@ class SessionPersistenceTests(unittest.IsolatedAsyncioTestCase):
 import asyncio
 import json
 import sys
-from simagentplg import JsonlSessionStorage
+from ejagent import JsonlSessionStorage
 
 async def main():
     session = await JsonlSessionStorage(sys.argv[1]).load(sys.argv[2])

@@ -1,11 +1,11 @@
-# SimAgentPlg
+# EJAgent Core
 
 [English](README.md) | [简体中文](README_zh-CN.md)
 
-SimAgentPlg 是一个用于构建有状态、可扩展 Agent 的轻量级 Core，面向
-OpenAI-compatible 模型 API。Core 提供状态、编排、上下文、工具调度、
-Middleware、MCP 和 Skill 等运行机制；Shell、文件编辑、Git、审批界面和完成工具
-由具体派生 Agent 自行实现。
+EJAgent Core 是一个 OpenAI-first Agent Harness Core，围绕八个核心维度构建：
+执行内核、运行控制、可组合扩展、安全边界、上下文管理、持久历史、分支演化与
+可观测性。Core 提供状态、编排、上下文、工具调度、Middleware、MCP 和 Skill 等
+运行机制；Shell、文件编辑、Git、审批界面和完成工具由具体派生 Agent 自行实现。
 
 需要 Python 3.12 或更高版本。
 
@@ -45,15 +45,26 @@ CodeAgent 等派生 Agent。
 ## 安装
 
 ```bash
-uv sync
+pip install ejagent-core
+# 或在源码仓库中执行：uv sync
 ```
 
 MCP 支持是可选能力。只有使用 MCP 的 Agent 才需要安装额外依赖：
 
 ```bash
 uv sync --extra mcp
-# 或：pip install "SimAgentPlg[mcp]"
+# 或：pip install "ejagent-core[mcp]"
 ```
+
+0.6.0 将 PyPI Distribution 改名为 `ejagent-core`，Python Import Package 改为
+`ejagent`：
+
+```python
+from ejagent import BaseAgent
+```
+
+旧的 `simagentplg` Import 不再作为兼容别名保留。已有 JSONL Session 仍可读取；
+Restore 时会继续从 Provider 请求中剥离旧版内部消息元数据。
 
 ## 配置
 
@@ -71,7 +82,7 @@ LLM_INCLUDE_USAGE=true
 `ModelConfig` 属于 `OpenAIModelAdapter`，不再属于 `BaseAgent`。也可以直接构造：
 
 ```python
-from simagentplg import ModelConfig
+from ejagent import ModelConfig
 
 config = ModelConfig(
     model="deepseek-v4-flash",
@@ -89,7 +100,7 @@ Client 的创建、响应归一化以及可选的启动/关闭资源；`BaseAgen
 多次调用之间会保留对话历史：
 
 ```python
-from simagentplg import BaseAgent, ModelConfig, OpenAIModelAdapter
+from ejagent import BaseAgent, ModelConfig, OpenAIModelAdapter
 
 agent = BaseAgent(
     OpenAIModelAdapter(ModelConfig.from_env()),
@@ -189,7 +200,7 @@ Continue 分配新的 `run_id`、发布 `AgentContinued`，并通过 `SessionRun
 `BehaviorHook.after_turn()` 决定一个非终态完整 Turn 是否允许进入下一次 Provider 请求：
 
 ```python
-from simagentplg import BehaviorDecision
+from ejagent import BehaviorDecision
 
 
 class StopAfterFirstToolTurn:
@@ -216,7 +227,7 @@ agent = BaseAgent(
 `ToolEffect.READ_ONLY`，Runtime Policy 也必须允许并行：
 
 ```python
-from simagentplg import (
+from ejagent import (
     MethodToolHandler,
     RuntimePolicy,
     ToolDefinition,
@@ -273,7 +284,7 @@ Context Window 容量和累计 Run 消耗是两个独立概念。可以为 Agent
 `CompactionPolicy`，在每次模型请求前评估完整 Provider 上下文：
 
 ```python
-from simagentplg import CompactionPolicy, ContextBudget
+from ejagent import CompactionPolicy, ContextBudget
 
 context_policy = CompactionPolicy(
     ContextBudget(
@@ -305,7 +316,7 @@ User/Assistant/Tool Turn，以及需要原文保留的最近 Turn。Tool Call �
 自动行为默认关闭；启用时复用同一个 `CompactionPolicy` 和 `Compactor`：
 
 ```python
-from simagentplg import AutoCompactionPolicy
+from ejagent import AutoCompactionPolicy
 
 agent = BaseAgent(
     model,
@@ -372,7 +383,7 @@ Token metadata，最后原子替换成“受保护消息 + Summary + 最近 Turn
 版本化语义 Record：
 
 ```python
-from simagentplg import JsonlSessionStorage, SessionRecorder
+from ejagent import JsonlSessionStorage, SessionRecorder
 
 storage = JsonlSessionStorage("./sessions")
 recorder = SessionRecorder(session_id="project-42", storage=storage)
@@ -434,7 +445,7 @@ Revision 或静默覆盖 Branch Head；过期 Head 返回 `SessionConflictError`
 工具是否存在和任务是否必须显式完成已经解耦：
 
 ```python
-from simagentplg import RuntimePolicy
+from ejagent import RuntimePolicy
 
 policy = RuntimePolicy(
     max_steps=20,
@@ -472,7 +483,7 @@ policy = RuntimePolicy(require_explicit_finish=True)
 from collections.abc import Mapping
 from typing import Any
 
-from simagentplg import (
+from ejagent import (
     MethodToolHandler,
     StepOutcome,
     ToolDefinition,
@@ -533,7 +544,7 @@ MethodToolHandler((OPENAI_TOOL_DICTIONARY,))
 现有 `do_*` 方法仍然兼容：
 
 ```python
-from simagentplg import ToolProgressReporter, ToolProgressUpdate
+from ejagent import ToolProgressReporter, ToolProgressUpdate
 
 
 async def do_index(
@@ -562,7 +573,7 @@ Progress 保持顺序，在取消或 `ToolCompleted` 后停止接收；它不会
 工具结果数据与运行控制已经分离：
 
 ```python
-from simagentplg import StepOutcome, ToolControl
+from ejagent import StepOutcome, ToolControl
 
 StepOutcome(data)  # 继续模型—工具循环
 StepOutcome(data, control=ToolControl.COMPLETE)
@@ -577,7 +588,7 @@ StepOutcome(data, control=ToolControl.CANCEL)
 `ToolMiddleware` 是工具执行外围唯一的拦截链：
 
 ```python
-from simagentplg import ToolMiddleware
+from ejagent import ToolMiddleware
 
 
 class AuditMiddleware(ToolMiddleware):
@@ -592,7 +603,7 @@ class AuditMiddleware(ToolMiddleware):
 Policy 通道，也不会给 `BaseAgent` 增加特殊参数：
 
 ```python
-from simagentplg import (
+from ejagent import (
     RuleBasedToolPolicy,
     ToolApprovalDecision,
     ToolEffect,
@@ -651,7 +662,7 @@ Core 只提供策略和审批协议，不提供审批 UI，也不内置 Shell、
 Policy 限额、请求审批或到达 Handler：
 
 ```python
-from simagentplg import (
+from ejagent import (
     ToolPolicyMiddleware,
     ToolSchemaValidationMiddleware,
 )
@@ -697,7 +708,7 @@ Schema 时则返回普通、非终态 Tool Result：
 MCP 使用相同的 Handler 协议：
 
 ```python
-from simagentplg import (
+from ejagent import (
     BaseAgent,
     McpToolHandler,
     ModelConfig,
@@ -721,7 +732,7 @@ Skill 是独立于 Handler 工具的提示词和资源扩展：
 ```python
 from pathlib import Path
 
-from simagentplg import BaseAgent, ModelConfig, OpenAIModelAdapter
+from ejagent import BaseAgent, ModelConfig, OpenAIModelAdapter
 
 agent = BaseAgent(
     OpenAIModelAdapter(ModelConfig.from_env()),
@@ -746,7 +757,7 @@ examples/skills/
 
 ## Core 边界
 
-SimAgentPlg Core 负责机制：
+EJAgent Core 负责机制：
 
 ```text
 Orchestration + State + Context + Runtime Policy + Run Result
@@ -806,19 +817,22 @@ PyPI 发布由 `.github/workflows/release.yml` 和 Trusted Publishing 完成，G
 合并到 `main`，再推送与项目版本一致的 Tag：
 
 ```text
-PyPI 项目：SimAgentPlg
+PyPI 项目：ejagent-core
 GitHub Owner：jyh20030112
-Repository：SimAgentPlg
+Repository：SimAgentPlg（单独执行远程改名）
 Workflow：release.yml
 Environment：pypi
 ```
+
+`ejagent-core` 是新的 PyPI 项目名，因此创建 `v0.6.0` Release Tag 前，需要先为它
+配置 Trusted Publisher。
 
 建议为 GitHub `pypi` Environment 配置 Required Reviewer，并限制只有 Maintainer 可以
 创建 `v*` Tag。然后执行：
 
 ```bash
-git tag v0.5.0
-git push origin v0.5.0
+git tag v0.6.0
+git push origin v0.6.0
 ```
 
 工作流会拒绝不在 `main` 上或与 `project.version` 不一致的 Tag，重新执行完整质量矩阵，
