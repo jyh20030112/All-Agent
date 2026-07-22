@@ -982,15 +982,16 @@ uv build
 
 ## Release
 
-PyPI publishing uses `.github/workflows/release.yml` and Trusted Publishing;
-no long-lived API token is stored in GitHub. After configuring the `pypi`
-environment and PyPI publisher, merge the release commit into `main`, then push
-a version-matching tag:
+`.github/workflows/release.yml` builds one verified wheel/sdist pair, attaches
+both files to a generated GitHub Release, and publishes the same distributions
+to PyPI through Trusted Publishing. No long-lived API token is stored in
+GitHub. After configuring the `pypi` environment and PyPI publisher, merge the
+release commit into `main`, then push a version-matching tag:
 
 ```text
 PyPI project: ejagent-core
 GitHub owner: jyh20030112
-Repository: SimAgentPlg (rename separately)
+Repository: EJAgent
 Workflow: release.yml
 Environment: pypi
 ```
@@ -1008,7 +1009,9 @@ git push origin v0.6.0
 
 The workflow rejects tags whose commit is not on `main` or whose value does not
 match `project.version`, reruns the complete quality matrix, builds and smoke
-tests the distributions, then publishes them with a short-lived OIDC identity.
+tests the distributions, then publishes them to GitHub Releases and PyPI. The
+two publishing jobs consume the same immutable Actions artifact; only the PyPI
+job receives a short-lived OIDC identity.
 
 ## Public API
 
