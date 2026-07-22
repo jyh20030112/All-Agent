@@ -812,14 +812,15 @@ uv build
 
 ## 发布
 
-PyPI 发布由 `.github/workflows/release.yml` 和 Trusted Publishing 完成，GitHub
-中不保存长期 API Token。配置 `pypi` Environment 和 PyPI Publisher 后，先把发布提交
+`.github/workflows/release.yml` 只构建一份经过验证的 wheel/sdist，将同一份产物同时
+附加到自动生成的 GitHub Release，并通过 Trusted Publishing 发布到 PyPI。GitHub 中
+不保存长期 API Token。配置 `pypi` Environment 和 PyPI Publisher 后，先把发布提交
 合并到 `main`，再推送与项目版本一致的 Tag：
 
 ```text
 PyPI 项目：ejagent-core
 GitHub Owner：jyh20030112
-Repository：SimAgentPlg（单独执行远程改名）
+Repository：EJAgent
 Workflow：release.yml
 Environment：pypi
 ```
@@ -836,7 +837,8 @@ git push origin v0.6.0
 ```
 
 工作流会拒绝不在 `main` 上或与 `project.version` 不一致的 Tag，重新执行完整质量矩阵，
-构建并 smoke test 发布产物，最后使用短期 OIDC 身份上传 PyPI。
+构建并 smoke test 发布产物，然后发布到 GitHub Releases 和 PyPI。两个发布 Job 使用同一份
+不可变 Actions Artifact，只有 PyPI Job 会获得短期 OIDC 身份。
 
 ## 公共 API
 

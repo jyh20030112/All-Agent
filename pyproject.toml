@@ -14,9 +14,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/jyh20030112/SimAgentPlg"
-Repository = "https://github.com/jyh20030112/SimAgentPlg"
-Issues = "https://github.com/jyh20030112/SimAgentPlg/issues"
+Homepage = "https://github.com/jyh20030112/EJAgent"
+Repository = "https://github.com/jyh20030112/EJAgent"
+Issues = "https://github.com/jyh20030112/EJAgent/issues"
 
 [project.optional-dependencies]
 mcp = [
