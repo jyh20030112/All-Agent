@@ -2,7 +2,7 @@ import runpy
 import unittest
 from pathlib import Path
 
-from simagentplg import MethodToolHandler, OpenAIModelAdapter, SkillManager
+from ejagent import MethodToolHandler, OpenAIModelAdapter, SkillManager
 
 EXAMPLES_DIR = Path(__file__).parents[1] / "examples"
 

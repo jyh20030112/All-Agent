@@ -2,7 +2,7 @@ import unittest
 from dataclasses import FrozenInstanceError
 from typing import Any, get_type_hints
 
-from simagentplg import (
+from ejagent import (
     AgentEvent,
     AgentFinished,
     AgentStarted,

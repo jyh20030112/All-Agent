@@ -3,7 +3,7 @@ import unittest
 from dataclasses import FrozenInstanceError
 from typing import Any
 
-from simagentplg import (
+from ejagent import (
     AgentEvent,
     AssistantMessage,
     BaseAgent,

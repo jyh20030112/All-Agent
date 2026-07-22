@@ -3,7 +3,7 @@ import unittest
 import httpx
 from openai import APITimeoutError, AuthenticationError, RateLimitError
 
-from simagentplg import (
+from ejagent import (
     ContextOverflowError,
     ModelAuthenticationError,
     ModelErrorKind,
@@ -11,7 +11,7 @@ from simagentplg import (
     ModelRateLimitError,
     ModelTimeoutError,
 )
-from simagentplg.providers.openai import _normalize_provider_error
+from ejagent.providers.openai import _normalize_provider_error
 
 
 class StructuredProviderError(Exception):

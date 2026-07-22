@@ -3,7 +3,7 @@
 import asyncio
 from pathlib import Path
 
-from simagentplg import BaseAgent, ModelConfig, OpenAIModelAdapter
+from ejagent import BaseAgent, ModelConfig, OpenAIModelAdapter
 
 SKILLS_DIR = Path(__file__).with_name("skills")
 
@@ -22,7 +22,7 @@ async def main() -> None:
     try:
         result = await agent.runtime(
             task=(
-                "$release_notes Write release notes for SimAgentPlg 0.2.4. Changes: "
+                "$release_notes Write release notes for EJAgent Core 0.2.4. Changes: "
                 "added an orchestrator, structured run results, and runtime "
                 "policy controls."
             )

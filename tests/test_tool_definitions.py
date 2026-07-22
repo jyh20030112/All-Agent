@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from typing import Any, cast
 
-from simagentplg import (
+from ejagent import (
     AgentContextBuilder,
     AgentState,
     AssistantMessage,

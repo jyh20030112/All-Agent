@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
-from simagentplg import (
+from ejagent import (
     AgentContextBuilder,
     AgentOrchestrator,
     AgentRunError,
@@ -33,12 +33,12 @@ from simagentplg import (
     ToolMiddleware,
     ToolNext,
 )
-from simagentplg.agent.base import (
+from ejagent.agent.base import (
     DEFAULT_SYSTEM_PROMPT,
     EXPLICIT_FINISH_PROTOCOL_PROMPT,
     TOOL_PROTOCOL_PROMPT,
 )
-from simagentplg.agent.orchestrator import TOOL_COMPLETION_RETRY_PROMPT
+from ejagent.agent.orchestrator import TOOL_COMPLETION_RETRY_PROMPT
 
 TEST_CONFIG = ModelConfig(
     model="test-model",
@@ -328,7 +328,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_model_config_reads_chat_model_from_env(self) -> None:
         with (
-            patch("simagentplg.providers.openai.load_dotenv"),
+            patch("ejagent.providers.openai.load_dotenv"),
             patch.dict(
                 "os.environ",
                 {

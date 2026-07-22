@@ -1,16 +1,16 @@
-# SimAgentPlg 与 Pi Agent Harness 能力对照
+# EJAgent Core 与 Pi Agent Harness 能力对照
 
 > 更新日期：2026-07-22
 >
-> SimAgentPlg 基线：`4864804` 后的 Core 能力工作树，项目版本 `0.5.0`
+> EJAgent Core 基线：`58d28f1` 后的 0.6.0 Rename 工作树
 >
 > Pi 子模块基线：`f4e9ca74`
 >
-> 对照范围：`pi/packages/agent`、`pi/packages/coding-agent` 与 SimAgentPlg Core
+> 对照范围：`pi/packages/agent`、`pi/packages/coding-agent` 与 EJAgent Core
 
 ## 1. 当前结论
 
-SimAgentPlg 已经不只是 Agent Loop。当前实现覆盖了通用 Agent Core 的主要执行机制：
+EJAgent Core 已经不只是 Agent Loop。当前实现覆盖了通用 Agent Core 的主要执行机制：
 
 - Provider-neutral 模型边界和 OpenAI-compatible Adapter
 - 模型—工具循环、结构化终止结果与 Runtime Policy
@@ -358,7 +358,7 @@ CD 属于交付能力，不改变 Core Runtime 语义。
 
 ## 4. 与 Pi 的能力矩阵
 
-| Harness 能力 | Pi 当前实现 | SimAgentPlg 当前实现 | 结论 |
+| Harness 能力 | Pi 当前实现 | EJAgent Core 当前实现 | 结论 |
 |---|---|---|---|
 | Agent Loop | `agentLoop` / `Agent` | `AgentOrchestrator` / `BaseAgent` | 已对齐核心能力 |
 | 结构化终止 | Assistant stop reason 为主 | `AgentRunResult` + `StopReason` | Sim 更显式 |
@@ -399,7 +399,7 @@ CD 属于交付能力，不改变 Core Runtime 语义。
 ### 5.1 只读 Event 与行为型 Hook
 
 Pi 的 Agent 和 Coding Agent 允许 Hook 阻止 Tool、改写结果、停止 Turn、注入资源或修改
-Context。SimAgentPlg 当前坚持：
+Context。EJAgent Core 当前坚持：
 
 - `AgentEventSink` 只观察，不修改行为。
 - Tool 行为改写只通过 `ToolMiddleware`。
@@ -417,7 +417,7 @@ Pi 当前同时存在 Harness Session Repo 和 Coding Agent Session Manager：
 - Coding Agent 支持 Compaction、Branch Summary、Custom Entry、Label、Model Change 等类型。
 - Repo Fork 可以把选定 Entry 路径复制到新的 JSONL Session，并记录 Parent Session。
 
-SimAgentPlg 使用一个 Session 一个 JSONL 文件，所有 Branch 共享祖先 Record：
+EJAgent Core 使用一个 Session 一个 JSONL 文件，所有 Branch 共享祖先 Record：
 
 ```text
 main:       r1 → r2 → r3 → r4
@@ -429,7 +429,7 @@ main:       r1 → r2 → r3 → r4
 
 ### 5.3 Retry 与外部副作用
 
-SimAgentPlg 不从 `ToolCompleted` 中间恢复，也不自动执行 Retry：
+EJAgent Core 不从 `ToolCompleted` 中间恢复，也不自动执行 Retry：
 
 1. 找到目标 `RUN_STARTED`。
 2. 回到该 Run 之前的完成状态。
@@ -441,13 +441,13 @@ SimAgentPlg 不从 `ToolCompleted` 中间恢复，也不自动执行 Retry：
 ### 5.4 Compaction 边界
 
 Pi Coding Agent 支持更丰富的 Branch Summary、Extension Compaction 和 mid-turn 相关语义。
-SimAgentPlg 当前只在完整 User Turn 边界切分，并让应用拥有 Summary Prompt。它更适合作为
+EJAgent Core 当前只在完整 User Turn 边界切分，并让应用拥有 Summary Prompt。它更适合作为
 通用 Core，但在超大单 Turn 或复杂分支摘要方面能力较弱。
 
 ### 5.5 Tool 执行顺序
 
 Pi 当前默认并行执行允许并行的 Tool Call，同时保证最终 Tool Result 按 Assistant 源顺序
-写入 transcript。SimAgentPlg 采用更保守的双重 opt-in：Handler 必须声明 `READ_ONLY`，Agent
+写入 transcript。EJAgent Core 采用更保守的双重 opt-in：Handler 必须声明 `READ_ONLY`，Agent
 还必须开启并行策略。连续只读调用并发运行，但 `ToolCompleted` 与 Tool Message 在批次完成后
 按源顺序提交；副作用工具不会与相邻只读批次重叠。
 

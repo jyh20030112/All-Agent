@@ -1,6 +1,6 @@
 import unittest
 
-from simagentplg import (
+from ejagent import (
     AgentContextBuilder,
     AgentState,
     AssistantMessage,

@@ -3,7 +3,7 @@
 import asyncio
 from pathlib import Path
 
-from simagentplg import (
+from ejagent import (
     BaseAgent,
     McpToolHandler,
     ModelConfig,

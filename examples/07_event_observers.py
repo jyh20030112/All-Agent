@@ -3,7 +3,7 @@
 import asyncio
 from collections import Counter
 
-from simagentplg import (
+from ejagent import (
     AgentEvent,
     AgentEventKind,
     BaseAgent,

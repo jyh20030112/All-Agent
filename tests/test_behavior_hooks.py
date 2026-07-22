@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from typing import Any
 
-from simagentplg import (
+from ejagent import (
     AgentEvent,
     AgentFinished,
     AssistantMessage,

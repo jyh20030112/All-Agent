@@ -5,7 +5,7 @@ import os
 from collections.abc import AsyncIterator
 from typing import Any
 
-from simagentplg import (
+from ejagent import (
     AgentEvent,
     BaseAgent,
     CancellationToken,

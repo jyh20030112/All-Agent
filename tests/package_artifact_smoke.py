@@ -37,13 +37,19 @@ def main() -> None:
 
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
-        if "simagentplg/py.typed" not in names:
-            raise AssertionError("wheel is missing simagentplg/py.typed")
+        if "ejagent/py.typed" not in names:
+            raise AssertionError("wheel is missing ejagent/py.typed")
+        if any(name.startswith("simagentplg/") for name in names):
+            raise AssertionError("wheel unexpectedly contains the legacy package")
         metadata_name = next(
             name for name in names if name.endswith(".dist-info/METADATA")
         )
         metadata = archive.read(metadata_name).decode()
 
+    if "Name: ejagent-core\n" not in metadata:
+        raise AssertionError("wheel metadata has the wrong distribution name")
+    if "Version: 0.6.0\n" not in metadata:
+        raise AssertionError("wheel metadata has the wrong distribution version")
     if "Provides-Extra: mcp" not in metadata:
         raise AssertionError("wheel metadata does not declare the mcp extra")
     fastmcp_requirements = [

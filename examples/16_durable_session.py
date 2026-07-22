@@ -5,7 +5,7 @@ import asyncio
 import os
 from pathlib import Path
 
-from simagentplg import (
+from ejagent import (
     BaseAgent,
     JsonlSessionStorage,
     ModelConfig,
@@ -77,7 +77,7 @@ async def main() -> None:
     parser.add_argument("command", choices=("record", "resume"))
     parser.add_argument(
         "--session-dir",
-        default=os.getenv("SIMAGENTPLG_SESSION_DIR", ".simagentplg-sessions"),
+        default=os.getenv("EJAGENT_SESSION_DIR", ".ejagent-sessions"),
     )
     args = parser.parse_args()
     storage = JsonlSessionStorage(Path(args.session_dir))

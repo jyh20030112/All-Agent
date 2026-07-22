@@ -2,7 +2,7 @@
 
 import asyncio
 
-from simagentplg import (
+from ejagent import (
     AgentEvent,
     AgentFinished,
     AssistantTextDelta,

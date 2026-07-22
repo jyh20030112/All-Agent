@@ -5,7 +5,7 @@ import json
 import unittest
 from typing import Any
 
-from simagentplg import (
+from ejagent import (
     AssistantMessage,
     BaseAgent,
     CancellationToken,
@@ -28,7 +28,7 @@ from simagentplg import (
     ToolPolicyMiddleware,
     ToolPolicyRule,
 )
-from simagentplg.agent.state import AgentState
+from ejagent.agent.state import AgentState
 
 READ_TOOL = ToolDefinition(
     name="read",
@@ -342,7 +342,7 @@ class ToolPolicyTests(unittest.IsolatedAsyncioTestCase):
             middlewares=[ToolPolicyMiddleware(policy, approver=RaisingApprover())],
         )
 
-        with self.assertLogs("simagentplg.middleware.policy", level="ERROR"):
+        with self.assertLogs("ejagent.middleware.policy", level="ERROR"):
             outcome = await agent.dispatch("write", {"path": "/tmp/a"})
 
         self.assertEqual(outcome.control.value, "reject")
@@ -358,7 +358,7 @@ class ToolPolicyTests(unittest.IsolatedAsyncioTestCase):
             middlewares=[ToolPolicyMiddleware(RaisingPolicy())],
         )
 
-        with self.assertLogs("simagentplg.middleware.policy", level="ERROR"):
+        with self.assertLogs("ejagent.middleware.policy", level="ERROR"):
             outcome = await agent.dispatch("read", {"path": "/tmp/a"})
 
         self.assertEqual(outcome.control.value, "reject")

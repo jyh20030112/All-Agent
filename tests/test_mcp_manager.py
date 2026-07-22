@@ -3,7 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from simagentplg.plugins.mcp.mcp_manager import McpServerManager
+from ejagent.plugins.mcp.mcp_manager import McpServerManager
 
 
 class FakeMcpClient:

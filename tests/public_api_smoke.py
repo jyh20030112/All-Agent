@@ -16,11 +16,13 @@ def main() -> None:
 
     if args.expect_no_mcp and importlib.util.find_spec("fastmcp") is not None:
         raise AssertionError("fastmcp must not be installed by the core package")
+    if importlib.util.find_spec("simagentplg") is not None:
+        raise AssertionError("the legacy simagentplg import must not be installed")
 
-    import simagentplg
+    import ejagent
 
     missing_attributes = [
-        name for name in simagentplg.__all__ if not hasattr(simagentplg, name)
+        name for name in ejagent.__all__ if not hasattr(ejagent, name)
     ]
     if missing_attributes:
         raise AssertionError(
@@ -87,25 +89,25 @@ def main() -> None:
         "session_to_dict",
         "session_from_dict",
     }
-    missing_exports = required_exports.difference(simagentplg.__all__)
+    missing_exports = required_exports.difference(ejagent.__all__)
     if missing_exports:
         raise AssertionError(
             f"required public exports are missing: {', '.join(sorted(missing_exports))}"
         )
 
-    if not files("simagentplg").joinpath("py.typed").is_file():
+    if not files("ejagent").joinpath("py.typed").is_file():
         raise AssertionError("installed package is missing the py.typed marker")
-    if not version("SimAgentPlg"):
-        raise AssertionError("installed distribution has no version")
+    if version("ejagent-core") != "0.6.0":
+        raise AssertionError("installed distribution has the wrong version")
 
     if args.expect_no_mcp:
 
         async def check_missing_mcp_message() -> None:
-            manager = simagentplg.McpServerManager("unused.json")
+            manager = ejagent.McpServerManager("unused.json")
             try:
                 await manager.startup()
             except RuntimeError as exc:
-                if "SimAgentPlg[mcp]" not in str(exc):
+                if "ejagent-core[mcp]" not in str(exc):
                     raise AssertionError(
                         "missing MCP dependencies produced no install guidance"
                     ) from exc

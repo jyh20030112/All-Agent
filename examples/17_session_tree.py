@@ -5,7 +5,7 @@ import asyncio
 import os
 from pathlib import Path
 
-from simagentplg import JsonlSessionStorage
+from ejagent import JsonlSessionStorage
 
 
 async def main() -> None:
@@ -13,7 +13,7 @@ async def main() -> None:
     parser.add_argument("--session-id", default="durable-session-demo")
     parser.add_argument(
         "--session-dir",
-        default=os.getenv("SIMAGENTPLG_SESSION_DIR", ".simagentplg-sessions"),
+        default=os.getenv("EJAGENT_SESSION_DIR", ".ejagent-sessions"),
     )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("branches")
