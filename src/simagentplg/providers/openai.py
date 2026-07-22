@@ -100,6 +100,16 @@ class _StreamingToolCall:
     arguments: str = ""
 
 
+def _serialize_context_tools(
+    context: ContextBuildResult,
+) -> tuple[dict[str, Any], ...]:
+    """Prefer canonical definitions while preserving legacy contexts."""
+
+    if context.tool_definitions:
+        return tuple(tool.to_openai_tool() for tool in context.tool_definitions)
+    return context.tools
+
+
 _CONTEXT_OVERFLOW_CODES = {
     "context_length_error",
     "context_length_exceeded",
@@ -232,12 +242,13 @@ class OpenAIModelAdapter(ModelAdapter):
         if client is None:
             raise RuntimeError("OpenAI model client is not initialized")
 
+        tools = _serialize_context_tools(context)
         try:
             request = client.chat.completions.create(
                 model=self.config.model,
                 messages=cast(Any, context.llm_messages),
                 temperature=self.config.temperature,
-                tools=cast(Any, context.tools or None),
+                tools=cast(Any, tools or None),
             )
             response = (
                 await cancellation.run(request)
@@ -283,6 +294,7 @@ class OpenAIModelAdapter(ModelAdapter):
         if client is None:
             raise RuntimeError("OpenAI model client is not initialized")
 
+        tools = _serialize_context_tools(context)
         response: Any | None = None
         content_parts: list[str] = []
         tool_calls: dict[int, _StreamingToolCall] = {}
@@ -293,7 +305,7 @@ class OpenAIModelAdapter(ModelAdapter):
                 "model": self.config.model,
                 "messages": cast(Any, context.llm_messages),
                 "temperature": self.config.temperature,
-                "tools": cast(Any, context.tools) or None,
+                "tools": cast(Any, tools) or None,
                 "stream": True,
             }
             if self.config.include_usage:

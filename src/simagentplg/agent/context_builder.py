@@ -6,6 +6,11 @@ from typing import Any
 
 from simagentplg.agent.state import AgentState
 from simagentplg.agent.types import INTERNAL_METADATA_PREFIX, AgentMessage
+from simagentplg.handlers.definition import (
+    ToolDefinition,
+    ToolDefinitionInput,
+    normalize_tool_definitions,
+)
 from simagentplg.plugins.skill.skill_manager import SkillManager
 
 
@@ -16,6 +21,7 @@ class ContextBuildResult:
     agent_messages: tuple[AgentMessage, ...]
     llm_messages: tuple[AgentMessage, ...]
     tools: tuple[dict[str, Any], ...]
+    tool_definitions: tuple[ToolDefinition, ...] = ()
 
 
 class AgentContextBuilder:
@@ -32,7 +38,7 @@ class AgentContextBuilder:
         self,
         state: AgentState,
         *,
-        tools: Sequence[Mapping[str, Any]] = (),
+        tools: Sequence[ToolDefinitionInput] = (),
         transient_messages: Sequence[Mapping[str, Any]] = (),
     ) -> ContextBuildResult:
         """Build the context for one model request.
@@ -47,10 +53,12 @@ class AgentContextBuilder:
         context.extend(self._copy_messages(transient_messages))
         projected = self.convert_to_llm_messages(context)
         llm_messages = self._strip_internal_metadata(projected)
+        definitions = normalize_tool_definitions(tools)
         return ContextBuildResult(
             agent_messages=tuple(context),
             llm_messages=tuple(llm_messages),
-            tools=tuple(self._copy_tools(tools)),
+            tools=tuple(tool.to_openai_tool() for tool in definitions),
+            tool_definitions=definitions,
         )
 
     def convert_to_llm_messages(
@@ -106,12 +114,6 @@ class AgentContextBuilder:
         messages: Sequence[Mapping[str, Any]],
     ) -> list[AgentMessage]:
         return [dict(message) for message in messages]
-
-    @staticmethod
-    def _copy_tools(
-        tools: Sequence[Mapping[str, Any]],
-    ) -> list[dict[str, Any]]:
-        return [dict(tool) for tool in tools]
 
     @staticmethod
     def _system_message_end(

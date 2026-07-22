@@ -16,7 +16,8 @@ from simagentplg.agent.context_management import (
     CompactionDecision,
     CompactionPreparation,
 )
-from simagentplg.agent.result import AgentRunResult
+from simagentplg.agent.control import ControlInput, ControlInputKind
+from simagentplg.agent.result import AgentRunResult, StopReason
 from simagentplg.agent.types import ToolCallResult, ToolProgressUpdate
 from simagentplg.providers.base import (
     AssistantMessage,
@@ -29,7 +30,10 @@ class AgentEventKind(StrEnum):
     """Stable discriminator for one observable lifecycle event."""
 
     AGENT_STARTED = "agent_started"
+    AGENT_CONTINUED = "agent_continued"
     TURN_STARTED = "turn_started"
+    STEERING_APPLIED = "steering_applied"
+    STEERING_DISCARDED = "steering_discarded"
     CONTEXT_PRESSURE_EVALUATED = "context_pressure_evaluated"
     COMPACTION_STARTED = "compaction_started"
     COMPACTION_COMPLETED = "compaction_completed"
@@ -53,11 +57,46 @@ class AgentStarted:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentContinued:
+    """A new Run resumed the existing conversation without a user message."""
+
+    kind: ClassVar[AgentEventKind] = AgentEventKind.AGENT_CONTINUED
+
+
+@dataclass(frozen=True, slots=True)
 class TurnStarted:
     """One provider turn started."""
 
     kind: ClassVar[AgentEventKind] = AgentEventKind.TURN_STARTED
     turn: int
+
+
+@dataclass(frozen=True, slots=True)
+class SteeringApplied:
+    """One queued Steering input entered persistent history at a safe point."""
+
+    kind: ClassVar[AgentEventKind] = AgentEventKind.STEERING_APPLIED
+    control: ControlInput
+    target_turn: int
+
+    def __post_init__(self) -> None:
+        if self.control.kind is not ControlInputKind.STEERING:
+            raise ValueError("SteeringApplied requires a Steering control input")
+        if self.target_turn <= 0:
+            raise ValueError("target_turn must be greater than zero")
+
+
+@dataclass(frozen=True, slots=True)
+class SteeringDiscarded:
+    """One accepted Steering input was not applied before its Run ended."""
+
+    kind: ClassVar[AgentEventKind] = AgentEventKind.STEERING_DISCARDED
+    control: ControlInput
+    reason: StopReason
+
+    def __post_init__(self) -> None:
+        if self.control.kind is not ControlInputKind.STEERING:
+            raise ValueError("SteeringDiscarded requires a Steering control input")
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,7 +244,10 @@ class AgentFinished:
 
 AgentEventPayload: TypeAlias = (
     AgentStarted
+    | AgentContinued
     | TurnStarted
+    | SteeringApplied
+    | SteeringDiscarded
     | ContextPressureEvaluated
     | CompactionStarted
     | CompactionCompleted

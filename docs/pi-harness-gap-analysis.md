@@ -1,48 +1,91 @@
 # SimAgentPlg 与 Pi Agent Harness 能力对照
 
-> 更新日期：2026-07-16
-> 对照范围：`pi/packages/agent`、`pi/packages/coding-agent` 与 SimAgentPlg 当前实现
+> 更新日期：2026-07-22
+>
+> SimAgentPlg 基线：`4864804` 后的 Core 能力工作树，项目版本 `0.5.0`
+>
+> Pi 子模块基线：`f4e9ca74`
+>
+> 对照范围：`pi/packages/agent`、`pi/packages/coding-agent` 与 SimAgentPlg Core
 
 ## 1. 当前结论
 
-SimAgentPlg 已完成通用 Agent Core 的执行内核、只读事件协议、线性内存 Session、
-基础运行控制协议、Provider-neutral Text / Thinking / Tool Progress 流、模型 Usage
-聚合与单次 Run Token Budget、上下文压力评估、非变异压缩准备，以及显式可取消的
-Summary Compaction。
-目前已经具备稳定的模型—工具循环、结构化运行结果、工具运行时、Provider 适配层、
-MCP 适配、Skill 上下文资源、统一生命周期事件，以及基于事件保存和恢复对话的能力。
+SimAgentPlg 已经不只是 Agent Loop。当前实现覆盖了通用 Agent Core 的主要执行机制：
 
-它还不是完整的 Agent Harness。与 Pi 相比，主要缺少的是执行内核之上的控制面：
+- Provider-neutral 模型边界和 OpenAI-compatible Adapter
+- 模型—工具循环、结构化终止结果与 Runtime Policy
+- Tool Runtime、Middleware、MCP Adapter 和 Skill Resource
+- 只读生命周期事件、Text / Thinking Stream 和 Tool Progress
+- Cancellation、`abort()`、`wait_for_idle()` 与终态事件屏障
+- Usage 聚合、Run Token Budget 和 Context Pressure
+- 显式与自动 Summary Compaction
+- Provider Context Overflow 标准化、最多一次 compact-and-retry
+- Durable JSONL Session Journal
+- Session Tree、Branch Head、Checkout、Fork、Rollback 和整 Run Retry
+- 跨实例 / 跨进程 Session Journal 原子写入与 `SessionTreeStorage` 协议
+- 有界 FIFO Steering Queue、Model-call Safe Point 与 Session 审计
+- Follow-up Run Chain、有界 FIFO、Waitable Handle 与终态 Sink 屏障
+- Continue / Resume Safe Point、独立 Run Intent 与 Session 回放
+- `after_turn` Behavior Hooks、隔离 Turn Snapshot 与结构化策略停止
+- Parallel Read-only Tool Calls、显式 Side-effect 属性与确定性结果提交
+- OpenAI-first Canonical `ToolDefinition`、强类型校验与旧字典兼容视图
+- 基于现有 Middleware 链的 Tool Execution Policy、异步审批与并发安全 Run 限额
+- Policy 前的本地 Tool Argument JSON Schema Validation 与安全错误载荷
+- Python 3.12 / 3.13 CI、构建 smoke test 与 PyPI Trusted Publishing CD
 
-- 行为型 Hook
-- 持久化 Session 后端和 Session 分支
-- Steering、Follow-up 等消息队列
-- 自动 Compaction 与 Overflow Recovery
-- ExecutionEnv 与 Workspace 抽象
+因此，`BaseAgent` 已经是一个可独立使用的轻量 Harness 组装根，而不再只是
+`AgentOrchestrator` 的薄包装。
 
-因此，当前 `AgentOrchestrator` 对应 Pi 的 Agent Loop；`BaseAgent` 已具备 Harness
-组装根的雏形，但尚未承担完整 Harness 控制面。
+与 Pi 的主要差距已经从“缺少持久化和自动压缩”转移到以下领域：
+
+1. **行为控制面**：Steering、Follow-up、Continue 与 `after_turn` Hook 基础版已完成；
+   `before_model` 等更广义行为注入仍未实现。
+2. **工具调度**：只读 Tool Call、Canonical Definition、Execution Policy 和本地参数校验已
+   完成基础版；工具集合刻意保持构造/启动时冻结，不向模型或 Active Run 暴露动态修改能力。
+3. **Provider 广度**：当前明确采用 OpenAI-first，仅实现 OpenAI-compatible Adapter；在出现
+   真实需求前不建设多 Provider Schema 抽象。
+4. **长 Journal 性能**：写入与读取仍会线性重建索引，需要按实际规模决定索引和归档策略。
+5. **ExecutionEnv / CodeAgent**：文件、Shell、Git、Workspace、Sandbox、Approval 和 UI/RPC
+   明确留给派生层，当前仓库尚未实现该层。
+
+Session Journal 并发边界、行为控制链、安全并行调度、OpenAI-first Canonical Tool
+Definition、Tool Execution Policy 和参数 Schema Validation 已补齐。Dynamic Tool Set 不进入
+近期路线。
 
 ## 2. 当前架构
 
 ```text
 BaseAgent
-  ├── ActiveRun / CancellationSource
+  ├── Active Operation / CancellationSource
+  ├── Bounded Steering Queue / Control Receipt
+  ├── Follow-up FIFO / Run Handle / Run-chain Gate
+  ├── Continue Safe Point / Run Intent
+  ├── BehaviorHook / TurnSnapshot / BehaviorDecision
   ├── ModelAdapter
   │     └── OpenAIModelAdapter
   ├── AgentOrchestrator
+  │     ├── RuntimePolicy
+  │     ├── AgentContextBuilder
+  │     ├── UsageAccumulator
+  │     └── AutoCompactionPolicy
+  ├── CompactionPolicy / ContextBudget
+  ├── CompactionRuntime
+  │     └── Compactor / ModelCompactor
   ├── AgentEventEmitter
-  │     └── AgentEventSink / CompositeAgentEventSink（可选）
-  │           └── SessionRecorder
-  │                 └── SessionStorage
+  │     └── AgentEventSink / CompositeAgentEventSink
+  │           └── SessionRecorder(branch_id)
+  │                 ├── MemorySessionStorage
+  │                 └── JsonlSessionStorage
+  │                       └── Session Tree / Branch Heads
   ├── AgentState
-  ├── AgentContextBuilder
-  ├── CompactionPolicy / ContextBudget（可选）
-  ├── CompactionRuntime / Compactor（可选）
   ├── ToolRuntime
+  │     ├── Read-only Batch Scheduler / Side-effect Barrier
+  │     ├── ToolDefinition / ToolEffect / OpenAI Compatibility View
   │     ├── BaseHandler / MethodToolHandler
   │     ├── McpToolHandler
   │     └── ToolMiddleware
+  │           ├── ToolSchemaValidationMiddleware
+  │           └── ToolPolicyMiddleware / RuleBasedToolPolicy
   └── SkillManager
 ```
 
@@ -50,619 +93,491 @@ BaseAgent
 
 | 组件 | 当前职责 |
 |---|---|
-| `BaseAgent` | 依赖组装、外部调用串行化、运行取消、空闲等待、资源生命周期、兼容 API |
-| `AgentOrchestrator` | 执行模型—工具循环并生成结构化终止结果 |
-| `AgentState` | 保存消息、任务状态、Turn、结果和 Active Skill |
-| `AgentContextBuilder` | 投影每轮上下文，注入 Skill 和临时控制消息 |
-| `CompactionPolicy` | 评估完整请求压力并准备旧持久 Turn 的安全切分 |
-| `CompactionRuntime` | 编排显式摘要、取消、原子消息替换和 Compaction 终态事件 |
-| `AgentEventEmitter` | 生成 run id 和事件序号，发布只读事件并隔离 Sink 异常 |
-| `AgentEventSink` | 观察 Agent、Turn、Message 和 Tool 生命周期 |
-| `SessionRecorder` | 将事件投影为线性 Session，不侵入 Agent Loop |
-| `SessionStorage` | 保存和加载隔离的 Session 快照 |
-| `ModelAdapter` | 隔离 Provider Client、请求调用和响应归一化 |
-| `ToolRuntime` | 工具生命周期、路由、Middleware、执行、进度流与重复调用保护 |
-| `BaseHandler` | 一组可执行工具的最小协议 |
-| `McpToolHandler` | 将 MCP Tool 转换为统一 Handler 工具 |
+| `BaseAgent` | 依赖组装、Run Chain、Steering、Follow-up、Behavior Hook、取消、空闲等待、资源生命周期、Session Restore |
+| `AgentOrchestrator` | 模型—工具循环、after-Turn 决策、自动压缩、Overflow Recovery、结构化终止 |
+| `AgentState` | 当前消息、Turn、任务状态和运行结果 |
+| `AgentContextBuilder` | 构造 Agent 投影和 Provider-safe 请求，注入 Skill 与临时控制消息 |
+| `RuntimePolicy` | 步数、无工具响应、重复调用、显式完成和 Run Token Budget |
+| `CompactionPolicy` | 评估 Context Pressure，并按完整 User Turn 准备安全切分 |
+| `AutoCompactionPolicy` | 控制压力触发和最多一次 Overflow Recovery |
+| `CompactionRuntime` | 取消、摘要编排、原子替换和 Compaction 终态事件 |
+| `ModelCompactor` | 将借用的 `ModelAdapter` 适配为 `Compactor`，Prompt 仍由应用提供 |
+| `AgentEventEmitter` | 分配 `run_id` 和事件序号，按顺序发布只读事件 |
+| `SessionRecorder` | 将生命周期事件转换为指定 Branch 的语义 Journal Record |
+| `JsonlSessionStorage` | 原子追加 JSONL、跨进程锁、校验树、回放节点、管理 Branch 和 Head |
+| `ToolRuntime` | 工具路由、Middleware、执行策略、Progress、控制信号和重复调用保护 |
+| `ModelAdapter` | Provider Client 生命周期、请求和响应归一化 |
 | `SkillManager` | Skill 发现、metadata、显式选择和上下文投影 |
-| `RuntimePolicy` | 最大步数、Token Budget、无工具响应、重复调用和显式完成策略 |
-| `AgentRunResult` | 描述运行状态、停止原因、轮数、输出、错误和 Run Usage |
 
 ### 2.2 Runtime 主链路
 
 ```text
 BaseAgent.run(task)
-  → create per-run CancellationToken
-  → startup ModelAdapter + ToolRuntime
-  → AgentOrchestrator.run(task, cancellation)
+  → create CancellationToken + run_id
   → AgentState.begin_task(task)
-  → AgentContextBuilder.build(...)
-  → ContextPressureEvaluated（配置策略时，只观察）
-  → ModelAdapter.stream(context, cancellation)
-  → ModelTextDelta* / ModelThinkingDelta* → ModelResponseCompleted
-  → AssistantMessage + ModelUsage（最终提交）
-  → ToolRuntime.execute_tool_call(..., cancellation)
-  → ToolProgressed*（可选、只观察）
+  → AgentStarted
+  → drain Steering at model-call safe point
+  → AgentContextBuilder.build()
+  → ContextPressureEvaluated
+  → optional pressure-triggered Compaction
+  → ModelAdapter.stream()
+  → Text / Thinking Delta*
+  → ModelResponseCompleted + ModelUsage
+  → MessageCompleted
+  → ToolRuntime.execute_tool_call()*
+  → ToolProgressed* / ToolCompleted
   → AgentRunResult
+  → AgentFinished
+  → SessionRecorder locked append + fsync
+  → optional next Follow-up Run
 ```
 
-`AgentOrchestrator` 和 `ToolRuntime` 在主链路中向同一个 `AgentEventEmitter` 发布事件。
-未提供 `AgentEventSink` 时运行语义不变。
-
-`BaseAgent.runtime()` 是兼容包装：成功时返回文本输出，失败、拒绝或取消时抛出
-`AgentRunError`。
+Provider 在输出任何 Delta 前报告 Context Overflow 时，Orchestrator 可以执行一次自动压缩、
+重建 Context 并重试。已经开始输出后发生 Overflow 不会重试，以免重复可见输出。
 
 ## 3. 已完成的 Core 能力
 
-### 3.1 稳定的运行与终止语义
+### 3.1 执行与终止语义
 
-`RuntimePolicy` 已集中管理：
+`AgentRunResult`、`RunStatus`、`StopReason` 和 `ToolControl` 已能稳定区分：
 
-- `max_steps`
-- `max_no_tool_responses`
-- `max_repeated_tool_calls`
-- `require_explicit_finish`
+- 文本完成和工具显式完成
+- 工具拒绝、工具取消和外部取消
+- 空响应、步数限制、无工具响应限制和重复工具调用
+- Run Token Budget 超限与 Usage 缺失
+- Context Overflow、Compaction 失败和一般 Runtime 错误
 
-`AgentRunResult` 与 `StopReason` 已能区分：
+工具存在与任务是否必须显式完成已经解耦。`BaseAgent.runtime()` 只作为兼容包装，核心
+终态接口是 `run() -> AgentRunResult`。
 
-- 普通文本完成
-- 工具显式完成
-- 工具拒绝
-- 工具取消
-- 空响应
-- 最大步数
-- 连续无工具响应
-- 重复工具调用
-- Runtime 错误
+### 3.2 Provider 与 Tool Runtime
 
-工具是否存在与是否必须显式完成已经解耦。工具通过 `ToolControl` 返回
-`CONTINUE`、`COMPLETE`、`REJECT` 或 `CANCEL`，不再使用一个布尔值混合多种终止
-含义。
+Core 只依赖 `ModelAdapter`，当前 `OpenAIModelAdapter` 负责 Streaming、Tool Call 组装、
+Usage 和 Provider Error 归一化。只实现 `complete()` 的 Adapter 仍可通过基类回退工作。
 
-### 3.2 Provider 适配层
-
-Core 不再直接持有 OpenAI Client。`BaseAgent` 只依赖 `ModelAdapter`：
-
-```text
-ContextBuildResult
-  → ModelAdapter.stream()
-  → ModelTextDelta*
-  → ModelResponseCompleted
-      └── AssistantMessage / ModelToolCall[]
-```
-
-当前提供 `OpenAIModelAdapter` 和对应的 `ModelConfig`。Adapter 负责 Client
-创建、可选 Client 注入、关闭、Streaming 和 Provider 响应归一化。只实现
-`complete()` 的第三方 Adapter 会由基类自动适配为单终态流。
-
-目前只实现了 OpenAI-compatible Adapter；Provider 边界已经存在，但多 Provider
-能力仍需通过第二个真实 Adapter 验证。
-
-### 3.3 统一 ToolRuntime
-
-所有模型 Tool Call 都进入 `ToolRuntime`。`AgentOrchestrator` 不再识别具体工具名，
-也不再接收 `has_handler_tools`。
-
-`ToolRuntime` 已具备：
+所有工具进入统一 `ToolRuntime`：
 
 - Handler 生命周期和确定性路由
-- 重复工具名检查
-- JSON 参数解析
-- Tool Middleware 组合
-- 工具异常转换为标准 Tool Message
-- 重复调用检测
-- 结构化控制信号
-- 空工具运行时支持
+- 重复工具名校验和 JSON 参数解析
+- Tool Middleware
+- 标准 Tool Message 和结构化 Tool Control
+- Cancellation 与 Progress
+- 重复调用保护
+- MCP Tool 适配
+- OpenAI-first `ToolDefinition`：Name、Description、Parameters、`strict` 与 Effect
+- 旧 OpenAI 字典在 Handler 边界一次归一化
+- 显式 `ToolEffect.READ_ONLY` / `SIDE_EFFECTING`
+- Opt-in Parallel Read-only Batch 与稳定源顺序提交
+- 可选 `ToolPolicyMiddleware`、默认拒绝、异步审批和原子 Run 调用限额
+- 可选 `ToolSchemaValidationMiddleware`、启动时 Schema 编译和安全的参数错误结果
 
-Middleware 仅在启动后实际存在工具路由时激活。
+默认仍按顺序执行。启用 `RuntimePolicy.parallel_tool_calls` 后，只有连续且显式标注为
+`READ_ONLY` 的调用才并行；未标注、未知和 `SIDE_EFFECTING` 工具形成串行屏障。开始事件按
+源顺序发出，Progress 可以交错，完成事件、Agent History 和 Session Tool Message 按 Assistant
+Tool Call 源顺序提交。并行上限由 `max_parallel_tool_calls` 控制。
 
-### 3.4 Skill 是上下文资源
+Tool Policy 不新增第二条执行链。`ToolExecutionPolicy` 只产生 ALLOW、DENY 或
+REQUIRE_APPROVAL 决策，`ToolPolicyMiddleware` 通过现有 `ToolMiddleware` 链强制执行。
+Rule-based 基础实现支持精确工具名、`ToolEffect`、同步/异步参数条件和每 Run 调用限额；
+并发只读调用使用原子预留，缺少 Approver、策略/审批异常或非法返回值一律 fail closed。
+Core 只提供审批协议，不包含具体审批 UI 或 Shell/Filesystem 风险规则。
 
-Skill 不属于 ToolRuntime，也不注册内部 `load_skill` 工具。
+Schema Validation 也是同一 Middleware 链的具体实现。推荐顺序为 Validation、Policy、其他
+Middleware、Handler。它在启动阶段通过 `configure_tools()` 编译静态 Canonical Parameters；
+Schema 配置错误会中止并回滚启动。参数错误使用 `ToolControl.CONTINUE` 返回有界、无参数值的
+JSON Pointer 错误，让模型可以修正；无效调用不会触发 Policy、Approver 或 Handler。
 
-```text
-SkillManager.discover()
-  → name + description + absolute location
-  → AgentContextBuilder 注入 metadata
-```
+### 3.3 事件、Streaming 与取消
 
-当前支持两种使用方式：
-
-1. 用户通过 `$skill_name` 或 `skill:skill_name` 显式选择，完整 Skill 指令直接注入
-   当前模型上下文。
-2. 未来 CodeAgent 拥有 `read` 工具后，模型可以根据 metadata 中的 `location`
-   渐进读取 `SKILL.md`。
-
-这种设计保留了无文件工具 Agent 的显式 Skill 能力，同时不会让 Orchestrator
-出现 Skill Tool 特殊分支。
-
-### 3.5 MCP 是工具适配器
-
-MCP 通过 `McpToolHandler` 接入统一 Handler 协议：
-
-```text
-MCP Server
-  → McpServerManager
-  → McpToolHandler
-  → ToolRuntime
-```
-
-Orchestrator 不知道工具是否来自 MCP。MCP Agent 可以执行工具后用普通文本完成，
-除非 `RuntimePolicy.require_explicit_finish=True`。
-
-Core 不携带默认 MCP Server 配置或默认 Skill。`McpToolHandler`、`McpServerManager`
-和 `SkillManager` 都要求调用方显式提供配置路径，确保未配置能力时不会产生隐藏行为。
-
-### 3.6 只读事件协议
-
-`BaseAgent` 接受可选的 `AgentEventSink`。每次运行生成独立 `run_id`，事件通过
-`sequence` 保证运行内顺序：
+事件信封包含 `agent_id`、`run_id` 和单调 `sequence`。当前主要事件包括：
 
 ```text
 AgentStarted
-  → TurnStarted
-  → MessageCompleted
-  → ToolStarted / ToolProgressed* / ToolCompleted（可选）
-  → TurnCompleted
-  → AgentFinished
-```
-
-事件模型复用已有运行模型：`MessageCompleted` 携带 `AssistantMessage`，工具事件
-携带 `ModelToolCall` 和 `ToolCallResult`，唯一终止事件 `AgentFinished` 携带
-`AgentRunResult`。完成、失败、拒绝和取消仍由 `RunStatus` 与 `StopReason` 区分，
-没有建立第二套终止类型。
-
-第一版事件是只读观察协议，不允许 Sink 改写运行行为。普通 Sink 异常只记录诊断
-warning，不改变 Agent 结果。Turn、Message 和 Tool 的正常流程日志已由结构化事件
-取代；资源启动、连接、回滚和 Sink 自身错误仍使用 Logger 诊断。
-
-### 3.7 线性内存 Session
-
-`SessionRecorder` 实现 `AgentEventSink`，将运行事实投影为 `AgentSession`：
-
-```text
-AgentStarted       → user message + SessionRun
-MessageCompleted   → assistant message
-ToolCompleted      → tool result message
-AgentFinished      → AgentRunResult
-```
-
-Session 只保存真实的 user、assistant 和 tool 对话，不保存 System Prompt、Skill 注入、
-显式完成重试提示或其他临时 Context Projection。`AgentSession.messages` 返回独立副本，
-可以直接传给 `BaseAgent.reset()` 恢复历史。
-
-当前提供 `SessionStorage` 协议和 `MemorySessionStorage`。内存实现对保存值和加载值均
-进行快照隔离；一个 Session 可以关联多次 run，并保存各自的 `run_id`、事件序号边界
-和 `AgentRunResult`。`CompositeAgentEventSink` 支持 Session、UI 和 Metrics 等多个
-观察者同时消费事件，单个普通 Sink 失败不会阻止其他 Sink 接收同一事件。
-
-### 3.8 运行取消与空闲协议
-
-每次 `BaseAgent.run()` 创建独立的 `CancellationSource`，只把只读
-`CancellationToken` 传给 Orchestrator、Model Adapter、Tool Runtime、Middleware 和
-Handler。`abort()` 不获取 `_operation_lock`，因此可以打断正在持锁等待的模型或工具；
-空闲时调用和重复调用均为幂等操作。
-
-外部取消返回 `RunStatus.CANCELLED / StopReason.EXTERNAL_ABORT`，不复用工具业务控制
-`ToolControl.CANCEL / StopReason.TOOL_CANCELLED`。
-取消发生在 Tool Call 中时，Runtime 会为已经开始和同批尚未开始的调用生成配对的
-`ToolCompleted` 与 cancelled Tool Result，避免 Session 留下悬空 Tool Call。
-
-`wait_for_idle()` 覆盖排队的 Run、`AgentFinished` 发布、SessionRecorder 保存和其他
-Event Sink 收尾。取消信号只中止模型与工具工作，不中止终态事件提交；同一 Agent 在
-取消后会为下一次 Run 创建新 Token 并可正常复用。当前 Token 已传到 Tool Handler，
-未来 subprocess 工具仍需在 ExecutionEnv Adapter 中把它落实为进程终止。
-
-### 3.9 Provider-neutral Text / Thinking 流
-
-`ModelAdapter.stream()` 以 `ModelTextDelta`、`ModelThinkingDelta` 和唯一终态
-`ModelResponseCompleted` 描述 Provider 输出。complete-only Adapter 通过基类默认实现
-自动转换为单终态流；
-`OpenAIModelAdapter` 使用真实 `stream=True` 请求，并在内部组装 Tool Call 的 id、name
-和 arguments，不向 Core 暴露 OpenAI Chunk 类型。
-
-Orchestrator 将文本和推理片段分别发布为 `AssistantTextDelta` 与
-`AssistantThinkingDelta`，但不会把 partial message 写入 `AgentState`。Thinking 不混入
-普通文本，默认也不进入 Session 或下一轮模型上下文。只有最终
-`ModelResponseCompleted` 才提交 `AssistantMessage` 并发布 `MessageCompleted`。
-`SessionRecorder` 忽略所有 Delta；中途 abort 会关闭 Provider Stream，但不会把半截
-文本或推理写入 State 和 Session。
-
-事件序列保持同一个 `run_id` 和单调 `sequence`：
-
-```text
+AgentContinued
 TurnStarted
-  → AssistantThinkingDelta* / AssistantTextDelta*
-  → MessageCompleted
-  → ToolStarted / ToolProgressed* / ToolCompleted（可选）
-  → TurnCompleted
+SteeringApplied / SteeringDiscarded
+ContextPressureEvaluated
+AssistantThinkingDelta*
+AssistantTextDelta*
+MessageCompleted
+ToolStarted / ToolProgressed* / ToolCompleted
+TurnCompleted
+CompactionStarted / CompactionCompleted / CompactionFailed
+AgentFinished
 ```
 
-当前事件发布仍按顺序 await，提供确定性顺序和自然背压。需要解耦慢速 UI 或 WebSocket
-时，应增加有界缓冲 Sink Adapter，而不是让 Core 为每个 Delta 创建无约束后台任务。
+事件是只读观察协议，不允许 Sink 改写行为。Partial Assistant Message 不进入
+`AgentState` 或 Session，只有 `MessageCompleted` 才是提交点。Thinking 和 Progress 默认
+不进入后续模型上下文。
 
-### 3.10 Tool Progress
+`CancellationToken` 已传递到 Model、Compactor、Tool Runtime、Middleware、Handler、Behavior Hook 和
+MCP。`abort()` 不等待操作锁，`wait_for_idle()` 覆盖终态 Sink 收尾；取消后同一 Agent
+可以复用。
 
-长时间运行的 Handler 可以选择接收当前 Tool Call 专属的 `ToolProgressReporter`，并通过
-`await progress.report(ToolProgressUpdate(...))` 发布结构化更新。没有声明 `progress`
-参数的现有 `do_*` 方法通过 `MethodToolHandler` 兼容适配，运行语义保持不变。
+### 3.4 Steering 控制面
 
-`ToolRuntime` 保证如下生命周期：
+`BaseAgent.steer(content)` 为当前 Run 提交有界 FIFO 控制输入，并返回带稳定 `input_id` 的
+`ControlReceipt`。即时状态明确区分 `accepted`、`agent_idle`、`queue_full` 和
+`run_closing`，不会静默丢弃输入。
+
+Steering 不会中断正在执行的 Model Response 或 Tool。Core 在下一次 Provider Context 最终
+确定前消费队列；该安全点也覆盖 Context Pressure Compaction 和 Overflow Retry。已经开始的
+Tool Call 必须先产生对应 Tool Result，Steering 才会作为新的 User Message 进入上下文。
+
+成功应用会发出 `SteeringApplied` 并写入 `steering_applied` Session Record。Run 在下一个
+Model Call 前结束时，未消费输入发出 `SteeringDiscarded`，但不伪装成 Durable History。
+
+### 3.5 Follow-up Run Chain
+
+`BaseAgent.follow_up(task)` 将独立任务提交到当前 Run Chain 的有界 FIFO，并返回
+`FollowUpHandle`。Handle 的 Receipt 只表示是否入队；`wait()` 最终返回该独立 Run 的
+`AgentRunResult`。取消某个等待者不会取消队列任务。
+
+Follow-up 必须等待前一个 `AgentFinished` 和全部 Event Sink 完成后才开始。每项都有独立
+`run_id`、事件序列和 Session Run。额外的 Run-chain Gate 会阻止已经等待锁的直接 `run()`、
+`compact()` 或生命周期操作插入 Follow-up 之前；首个直接 `run()` 仍会在自身结果完成后立即
+返回，不等待整条 Follow-up Chain。
+
+默认 `FollowUpFailurePolicy.DISCARD` 会在前一 Run 失败或取消时丢弃余项；显式选择
+`CONTINUE` 才继续。Queue Full、Agent Idle、Shutdown、前序 Run 非成功和等待者取消都有明确
+Receipt 或异常。Pending Queue 只存在于进程内，只有真正开始的 Follow-up 才通过
+`SessionRecorder` 写入 `run_started`。
+
+### 3.6 Continue / Resume Safe Point
+
+`BaseAgent.continue_run()` 从已提交历史启动新的独立 Run，但不会追加 User Message。Continue
+分配新的 `run_id`，发出 `AgentContinued`，并通过 `run_continued` Journal Record 持久化；
+`SessionRunIntent` 可区分普通 Task 与 Continue，Restore 后仍能恢复最新终态并继续。
+
+Continue 只允许显式安全的 Stop Reason。Active Run、Shutdown、无前序 Run、不支持的失败或
+取消原因，以及未匹配 Tool Result 的 Tool Call 都通过 `ContinueRejectedReason` 明确拒绝。
+调用方可以先读取 `can_continue` 和 `continue_rejection_reason`，也可以处理
+`ContinueRejectedError`。
+
+Continue 复用普通 Run 的 Cancellation、Steering Safe Point、Auto Compaction、Follow-up
+Run Chain、`AgentFinished` Sink Barrier 和 `wait_for_idle()`。因此它不是修改旧 Run，也不是
+Retry Branch；它只是从安全历史边界继续模型循环。
+
+### 3.7 Behavior Hooks
+
+`BehaviorHook.after_turn()` 是独立于只读 Event Sink 和 Tool Middleware 的行为决策点。它只在
+本来还会进入下一 Turn 的完整非终态回合执行，位置固定为：Tool Result 提交、
+`TurnCompleted` 完成之后，下一次 `TurnStarted` 和 Provider Request 之前。
+
+Hook 接收隔离的 `TurnSnapshot` 和当前 `CancellationToken`，不接触可变 `AgentState`。多个
+Hook 按声明顺序 await；`None` 或 `BehaviorDecision.CONTINUE` 继续，首个 STOP 短路后续 Hook，
+并产生 `RunStatus.COMPLETED + StopReason.BEHAVIOR_STOP`。正常 `AgentFinished` 和 Session
+`run_finished` 仍会完成，因此该终态也是允许显式 Continue 的安全边界。
+
+Hook 异常或非法返回值转换为 `RUNTIME_ERROR`，慢 Hook 形成有意的有界背压，`abort()` 可以
+中断它，`wait_for_idle()` 会等待 Hook 与终态 Sink。第一批不加入 `before_model` Context 注入，
+避免与 `AgentContextBuilder` 职责重叠。
+
+### 3.8 Usage、Context 与 Compaction
+
+当前上下文管理链路已经完整接通：
 
 ```text
-ToolStarted
-  → ToolProgressed*
-  → ToolCompleted
+ModelUsage
+  → RunUsage / max_run_tokens
+  → ContextUsageEstimate
+  → ContextBudget
+  → CompactionPolicy.prepare()
+  → Compactor / ModelCompactor
+  → SummaryEntry
+  → atomic AgentState replacement
 ```
 
-Reporter 绑定当前 turn 和 `ModelToolCall`；外层 `AgentEvent` 继续提供 `agent_id`、
-`run_id` 和全局单调 `sequence`。更新按 `await report()` 顺序发布，取消后停止接收，
-Reporter 会在 `ToolCompleted` 前关闭并等待正在发布的更新完成，工具结束后的迟到更新
-会被忽略。
+关键语义：
 
-Progress 是只读观察数据，不修改 `StepOutcome`、`ToolControl`、`AgentState` 或
-`AgentRunResult`，也不写入 Session 和下一轮模型上下文。`McpToolHandler` 已保持协议
-兼容，但只有底层 MCP Manager 将来暴露 Progress Notification 时才会转发真实进度。
-本阶段仍顺序执行 Tool Call，没有同时引入 Parallel Tool Calls。
+- Run Budget 与单次请求 Context Window 分离。
+- Usage 的 unknown 与明确的 zero 分离。
+- UTF-8 启发式估算和 Tool Schema 作为完整请求下界。
+- 只在完整 User Turn 边界切分，避免拆开 Tool Call 与 Tool Result。
+- 显式 `compact()` 与自动压缩共享取消和原子替换机制。
+- 自动压力压缩是 opt-in。
+- Provider Overflow 最多 compact-and-retry 一次。
+- Compactor 失败安全终止，不安装部分 Summary。
+- Compaction 通过 Session Record 持久化，原始审计 Entry 不删除。
 
-### 3.11 Usage Accounting 与 Run Budget
+### 3.9 Durable JSONL Session Tree
 
-`ModelResponseCompleted` 携带可选的 Provider-neutral `ModelUsage`：input、output 和
-total token 为统一必填字段，cache read/write 与 reasoning 是可选细分。`None` 表示
-Provider 未报告，和明确报告的 `0` 保持不同语义。OpenAI-compatible Adapter 默认请求
-流式 Usage，并能处理没有 choices、只包含 usage 的最终 chunk；不兼容的服务可以关闭
-`ModelConfig.include_usage`。
-
-Orchestrator 为每个 Run 建立独立 `UsageAccumulator`。最终 `AgentRunResult.usage` 保存
-input/output/total 聚合、请求数、已报告请求数和 `complete` 覆盖状态。Usage 也作为
-内部 metadata 附加到 assistant agent message 并由 Session 保存；
-`AgentContextBuilder` 在自定义投影完成后统一从 `llm_messages` 移除 Usage，因此现在：
+`SessionRecorder` 对 Journal Storage 追加语义 Record：
 
 ```text
-agent_messages → 保留 Harness / Session Usage metadata
-llm_messages   → Provider-safe 消息，不含 Usage metadata
+run_started
+message_appended
+messages_appended
+steering_applied
+compaction_applied
+run_finished
+branch_created
+checkpoint
 ```
 
-`RuntimePolicy.max_run_tokens` 是可选的累计模型请求预算，不等同于 context window。
-预算只在轮次边界检查：当前 Assistant Message 和它已经请求的 Tool Call 会先完整收尾，
-然后 Runtime 才决定是否允许下一次模型请求。最终响应即使刚刚超过预算仍可成功；只有
-仍需继续时才返回 `TOKEN_BUDGET_EXCEEDED`。配置预算但之前请求没有 Usage 时返回
-`USAGE_UNAVAILABLE`，不会把未知值按零计算。未配置预算时，complete-only Adapter 和
-不返回 Usage 的 Provider 保持兼容。
-
-### 3.12 Context Pressure 与 Compaction Preparation
-
-`RunUsage.total_tokens` 是一次 Run 内多次模型请求的累计消耗，会重复计算历史上下文，
-因此不能表示下一次请求的 Context Window 占用。当前 Core 新增独立的上下文管理协议：
+每条 Record 包含：
 
 ```text
-ContextUsageEstimate（完整请求事实）
-  ↓
-ContextBudget + CompactionPolicy（阈值策略）
-  ↓
-CompactionPreparation（持久历史切分计划）
+record_id + parent_id + branch_id + revision
+session_id + agent_id + sequence + type + data
 ```
 
-`estimate_context_usage()` 优先读取最近一条 Assistant 内部 `ModelUsage` 作为已报告基线，
-只对它之后追加的消息做增量估算；同时对当前完整 `agent_messages + tools` 做一次
-UTF-8 感知的启发式估算，并取两者较大值，避免 Skill 投影或 Tool Schema 变化导致明显
-低估。没有 Usage 时则完全使用启发式估算。`MessageTokenEstimator` 是可替换协议，具体
-Provider 或派生 Agent 可以接入精确 tokenizer。
+文件顺序定义全局 `revision`，`parent_id` 定义逻辑树。当前支持：
 
-`ContextBudget(context_window, reserve_tokens, keep_recent_tokens)` 与
-`RuntimePolicy.max_run_tokens` 保持独立：前者约束单次请求容量，后者约束一次 Run 的累计
-消耗。配置 `CompactionPolicy` 后，Orchestrator 在 Provider 调用前发布
-`ContextPressureEvaluated`。事件包含 `CompactionDecision`；达到阈值时还包含
-`CompactionPreparation`。
+- `load()`：兼容地加载 `main` Head
+- `checkout()`：加载 Branch Head 或任意 Record
+- `head()` / `list_branches()`
+- `fork()`：从已完成投影创建通用 Branch
+- `rollback()`：只允许回到源 Branch 的祖先并创建新 Branch
+- `prepare_retry()`：回到目标 Run 之前并返回原始 Task
+- `SessionRecorder(branch_id=...)`：在指定 Branch 继续执行
+- `expected_head_id` 与 `SessionConflictError`
 
-压缩准备只读取 `AgentState.messages`，不会操作 Skill、临时 Runtime Prompt 或 Tool
-Schema。它保护开头的 System/协议消息，只在完整 User Turn 边界切分旧的
-User/Assistant/Tool 历史，因此 Assistant Tool Call 与对应 Tool Result 不会被拆开。
-遇到后置 System 或未知消息类型时，第一版将该消息及其之前内容整体保护。准备结果是
-深拷贝快照，不修改 Agent State 或 Session。
+Fork、Rollback 和 Retry 都不改写旧历史。Checkout 可以审计未完成节点，但正常 Fork 和
+Restore 会拒绝未完成 Run。Retry 是“准备新 Branch + 返回原 Task”，不会自动重放可能
+有外部副作用的 Tool。
 
-压力评估本身不生成 Summary、不停止 Run、不替换历史，也不自动恢复 Provider overflow。
-`ContextPressureEvaluated` 继续保持只读，显式行为由独立 Compactor API 承担。
+JSONL 的当前耐久性保证：
 
-### 3.13 SummaryEntry 与显式 Compactor
+- Session ID 映射为哈希文件名
+- 每条完整 Record 通过一次追加写入并 `fsync`
+- 中断产生的不完整尾行可忽略并在下次追加前修复
+- 完整但损坏的 JSON、错误 Schema、父链和 Branch Head 会明确失败
 
-当前 Core 已新增 `agent/compaction.py`，把摘要行为与压力策略分开：
+尚未保证的是多个进程对同一 Session 的 read-validate-append 原子性。
+
+### 3.10 交付与兼容性
+
+- Python 3.12 和 3.13 质量矩阵
+- Ruff、Mypy、Unit Test、sdist/wheel 和安装后 Public API smoke test
+- PyPI Trusted Publishing CD
+- Release Tag 与 `project.version` 一致性检查
+- Release Commit 必须属于 `main`
+
+CD 属于交付能力，不改变 Core Runtime 语义。
+
+## 4. 与 Pi 的能力矩阵
+
+| Harness 能力 | Pi 当前实现 | SimAgentPlg 当前实现 | 结论 |
+|---|---|---|---|
+| Agent Loop | `agentLoop` / `Agent` | `AgentOrchestrator` / `BaseAgent` | 已对齐核心能力 |
+| 结构化终止 | Assistant stop reason 为主 | `AgentRunResult` + `StopReason` | Sim 更显式 |
+| Provider 边界 | 多 Provider / Model Registry | `ModelAdapter`，仅 OpenAI-compatible | 边界已建，广度不足 |
+| Context Transform | `transformContext` | `AgentContextBuilder` | 基础对齐 |
+| Event Stream | Message Snapshot + Delta | 分型 Delta + 原子 Message Commit | 语义不同，均可用 |
+| Event Barrier | `Agent` Subscriber | 顺序 await `AgentEventSink` | 已具备 |
+| Tool Middleware / Hook | `beforeToolCall`、`afterToolCall` | `ToolMiddleware` + Execution Policy | 基础具备 |
+| Stop-after-turn Hook | `shouldStopAfterTurn` | 顺序 await `BehaviorHook.after_turn` | 基础已具备 |
+| Steering | Queue + safe turn boundary | 有界 FIFO + Model-call Safe Point | 基础已具备 |
+| Follow-up | Agent outer loop queue | 独立 FIFO Run Chain + Waitable Handle | 基础已具备 |
+| Continue | `continue()` | 独立 Run + 无新增 User Message + Safe Point | 基础已具备 |
+| Parallel Tool Calls | 默认并行，可强制顺序 | Opt-in 只读并行 + 副作用屏障 | 基础已具备，更保守 |
+| Canonical Tool Definition | 内部强类型定义 | OpenAI-first `ToolDefinition` + 字典兼容 | 基础已具备 |
+| Tool Argument Validation | Provider / Tool 层处理 | 可选本地 JSON Schema Middleware | 已具备 |
+| Dynamic Tool Set | Runtime 可替换 | 构造/启动时冻结 | 刻意延后 |
+| Cancellation | AbortSignal | CancellationToken | 已对齐 |
+| Tool Progress | `onUpdate` | `ToolProgressReporter` | 已具备 |
+| Usage / Budget | Message Usage + Cost | ModelUsage + RunUsage + Run Budget | 基础已具备，无 Cost |
+| Context Pressure | Usage + Estimate | Usage + UTF-8 Estimate + Tool 下界 | 已具备 |
+| Explicit Compaction | Harness / Extension Hook | `compact()` + `Compactor` | 已具备 |
+| Auto Compaction | Coding Agent 已接通 | `AutoCompactionPolicy` | 已具备 |
+| Overflow Recovery | Coding Agent Auto Retry | 标准错误 + 最多一次 Retry | 已具备 |
+| Durable Session | JSONL | JSONL Semantic Journal | 已具备 |
+| Session Tree | Entry parent tree / forked repo | 同文件 Branch Tree | 已具备，模型不同 |
+| Fork | Before / at entry | 从完成 Record Fork | 已具备 |
+| Rollback | 通过选 Leaf / Fork 表达 | 独立 `rollback()` 意图 | Sim 更显式 |
+| Retry | Continue / Fork 组合 | `prepare_retry(run_id)` | 已具备完整 Run Retry |
+| Branch Summary | `branch_summary` Entry / Hook | 只有通用 Compaction Summary | 部分具备 |
+| Custom Session Entry | Extension Custom Entry | 固定 Session Record Kind | 未实现扩展协议 |
+| Labels / Model Change Entry | 已具备 | 无 | 未实现 |
+| ExecutionEnv | Coding Agent 集成 | 无 | 未实现 |
+| File / Shell / Git Tools | Coding Agent 内置 | 明确不属于 Core | 待派生 Agent |
+| Extension / RPC / TUI | Coding Agent 已具备 | 无 | 待产品层 |
+
+## 5. 关键设计差异
+
+### 5.1 只读 Event 与行为型 Hook
+
+Pi 的 Agent 和 Coding Agent 允许 Hook 阻止 Tool、改写结果、停止 Turn、注入资源或修改
+Context。SimAgentPlg 当前坚持：
+
+- `AgentEventSink` 只观察，不修改行为。
+- Tool 行为改写只通过 `ToolMiddleware`。
+- Context 改写通过显式 `AgentContextBuilder`。
+- 自动压缩是 Orchestrator 的明确依赖，不通过 Event 回调重入 Agent。
+
+这个边界避免事件观察者意外改变运行。需要在完整 Turn 后停止时使用独立的
+`BehaviorHook.after_turn`；后续扩展决策点也不应把可变 Hook 塞进 `AgentEventSink`。
+
+### 5.2 Session Tree 模型
+
+Pi 当前同时存在 Harness Session Repo 和 Coding Agent Session Manager：
+
+- Entry 使用 `id/parentId` 形成树。
+- Coding Agent 支持 Compaction、Branch Summary、Custom Entry、Label、Model Change 等类型。
+- Repo Fork 可以把选定 Entry 路径复制到新的 JSONL Session，并记录 Parent Session。
+
+SimAgentPlg 使用一个 Session 一个 JSONL 文件，所有 Branch 共享祖先 Record：
 
 ```text
-BaseAgent.compact()
-  → CompactionPolicy.prepare(AgentState.messages)
-  → CompactionStarted
-  → Compactor.compact(CompactionRequest, cancellation)
-  → CompactorOutput
-  → Core 构造 SummaryEntry
-  → 原子替换：Protected + Summary + Recent
-  → CompactionCompleted / CompactionFailed
+main:       r1 → r2 → r3 → r4
+                       ↘ branch_created → r5 → r6
 ```
 
-`Compactor` 是可插拔、可取消协议。Core 不指定摘要模型、Provider、Prompt 或输出结构；
-派生 Agent 只返回 `CompactorOutput(content, source)`。范围索引、累计覆盖消息数和压缩前
-Token 等可信 metadata 由 Core 写入 `SummaryEntry`，不会由模型自行声明。Summary 作为
-带内部 metadata 的 System Message 保存；`AgentContextBuilder` 在 Provider 投影前移除
-metadata，只发送标准 role/content。
+这种结构避免复制历史，Fork / Rollback / Retry 意图也可直接审计；代价是同一文件的并发
+协调和索引更重要。
 
-显式 `BaseAgent.compact()` 与普通 `run()` 共用串行操作锁、CancellationSource、
-`abort()` 和 `wait_for_idle()`。Compactor 只接收深拷贝 Preparation；摘要完成前不修改
-Agent State。Provider 异常、错误返回、外部 abort 或调用协程取消都会产生结构化
-`CompactionResult` 和终态事件，且不会安装部分 Summary。仅在 Summary 和替换消息全部
-构造成功后才调用一次 `AgentState.replace_messages()`。
+### 5.3 Retry 与外部副作用
 
-重复压缩时，Core 从受保护上下文恢复上一条 `SummaryEntry`，通过
-`CompactionRequest.previous_summary` 交给 Compactor 合并，并在成功后替换旧 Summary，
-不会无限堆叠 Summary System Message。
+SimAgentPlg 不从 `ToolCompleted` 中间恢复，也不自动执行 Retry：
 
-Session 使用 `SessionCompaction` 保存“当前紧凑消息快照 + 已覆盖原始 entry 数量”。
-原始 `SessionMessage` 和 `SessionRun` 不删除，继续承担审计记录；`AgentSession.messages`
-返回最新压缩快照，再追加压缩后新产生的 entries，因此可直接交给 `BaseAgent.reset()`
-恢复紧凑上下文。
+1. 找到目标 `RUN_STARTED`。
+2. 回到该 Run 之前的完成状态。
+3. 创建 Retry Branch。
+4. 返回原 Task，由调用方显式执行。
 
-## 4. 与 Pi 的关键差异
+这比无条件 Continue 更保守，因为历史 Tool 可能已经发送邮件、付款或写入外部系统。
 
-### 4.1 Pi 的分层
+### 5.4 Compaction 边界
 
-```text
-Agent Loop
-  ↓
-Agent Harness
-  ├── Session
-  ├── Events / Hooks
-  ├── Abort / Queues
-  ├── Compaction
-  ├── ExecutionEnv
-  ├── Runtime configuration
-  └── Skills / Prompt Templates
-        ↓
-Coding Agent
-  ├── File / Shell / Git Tools
-  ├── Extensions
-  ├── Trust / Workspace
-  ├── TUI / Print / RPC
-  └── Project resources
-```
+Pi Coding Agent 支持更丰富的 Branch Summary、Extension Compaction 和 mid-turn 相关语义。
+SimAgentPlg 当前只在完整 User Turn 边界切分，并让应用拥有 Summary Prompt。它更适合作为
+通用 Core，但在超大单 Turn 或复杂分支摘要方面能力较弱。
 
-Pi 的 Harness 已经是完整控制面；SimAgentPlg 当前主要完成了 Agent Loop 和
-Harness 的组装骨架。
+### 5.5 Tool 执行顺序
 
-### 4.2 Pi 的 Skill
+Pi 当前默认并行执行允许并行的 Tool Call，同时保证最终 Tool Result 按 Assistant 源顺序
+写入 transcript。SimAgentPlg 采用更保守的双重 opt-in：Handler 必须声明 `READ_ONLY`，Agent
+还必须开启并行策略。连续只读调用并发运行，但 `ToolCompleted` 与 Tool Message 在批次完成后
+按源顺序提交；副作用工具不会与相邻只读批次重叠。
 
-Pi 将 Skill 定义为 Harness Resource，而不是 Tool：
+并行批次共享 Run Cancellation，每个 Progress 保留自己的 `tool_call_id`。普通异常转换为对应
+Tool Result；外部取消会补齐批次和后续未启动调用；并行批次中的 active peer 全部收尾后，按
+源顺序选择首个 COMPLETE / REJECT / CANCEL。`READ_ONLY` 是 Handler 与 Middleware 对并发安全
+作出的契约，Core 不尝试从名称或参数自动推断副作用。
 
-- Harness 保存 `Skill[]`
-- System Prompt 注入名称、描述和文件位置
-- Coding Agent 使用普通 `read` 工具加载完整文件
-- 用户可通过 `harness.skill()` 或 `/skill:name` 显式调用
-- Agent Loop 不识别 `load_skill`
+### 5.6 Tool Middleware、Schema Validation 与 Execution Policy
 
-SimAgentPlg 采用相同的“Skill 是资源”边界，但保留 `$skill_name` 和
-`skill:skill_name` 作为轻量显式选择语法。
+`ToolMiddleware` 仍是唯一的工具行为拦截协议。`ToolSchemaValidationMiddleware` 和
+`ToolPolicyMiddleware` 都是它的标准实现，与 Audit、Metrics 等 Middleware 使用同一条组合链，
+不在 Tool Runtime 前后创建额外通道，也不给 `BaseAgent` 增加专用参数。
 
-### 4.3 Pi 的 MCP
+策略规则属于应用配置，不写入 `ToolDefinition`：Definition 描述工具能力和副作用类别，同一
+工具在不同应用中的权限可以不同。Rule-based 策略采用有序 first-match，推荐 `default=DENY`；
+审批由应用提供异步 `ToolApprover`。拒绝沿用 `ToolControl.REJECT`、`RunStatus.REJECTED` 和现有
+Session Tool Result，Handler 不会收到被拒绝的调用。
 
-Pi Coding Agent 明确不内置 MCP。MCP 通常由 Extension 或 Package 建立 Client，
-再通过 `registerTool()` 注册为普通工具。
+Validation 与 Policy 的失败语义不同：结构错误返回普通 Tool Error 并继续模型循环，权限拒绝
+返回 `ToolControl.REJECT` 并终止 Run。Validation 错误只包含 Tool、Code、JSON Pointer、失败
+Keyword 和通用消息；模型提供的参数值不会被复制到结果或 Session。
 
-SimAgentPlg 选择提供可选的 `McpToolHandler`，但执行边界相同：MCP 必须先适配成
-通用工具，Agent Loop 不感知 MCP 协议。
+## 6. 当前技术边界与风险
 
-### 4.4 工具集合
+### 6.1 JSONL 多进程写入正确性——已加固
 
-Pi Harness 维护通用 Tools Map 和 Active Tool Names，并支持运行时切换。当前
-SimAgentPlg 的工具集合主要由构造时 Handler 决定，MCP Schema 在启动时加载，尚无
-公开的动态启用、禁用或替换工具协议。
+`JsonlSessionStorage` 现在为每个 Session 使用稳定 `.jsonl.lock` Sidecar，并组合进程内共享锁
+与 POSIX Advisory Lock。读取、修复尾行、校验 `expected_head_id`、分配 Revision / Parent、
+追加和 `fsync` 位于同一临界区。CAS 失败继续返回 `SessionConflictError`，锁等待超时返回
+`SessionLockTimeoutError`；等待在 Worker Thread 中执行，可以取消而不阻塞 Event Loop。
 
-### 4.5 取消语义
+该实现面向 macOS / Linux 本地文件系统。NFS 等网络文件系统需要验证 Advisory Lock 语义，
+或者提供其他 `SessionTreeStorage` Backend。
 
-Pi 使用 Web `AbortController / AbortSignal`，将 Signal 传给流式 Provider、Tool、Hook
-和事件 Listener；Agent 主要通过 AssistantMessage 的 `stopReason="aborted"` 表示停止，
-高层 Harness 的 `abort()` 还会清空 Steering 与 Follow-up 队列。
+### 6.2 Tree Storage 协议——已完成
 
-SimAgentPlg 使用 Python `CancellationSource / CancellationToken`，以结构化
-`AgentRunResult` 表达取消，并刻意不把 Token 传给只读 Event Sink。模型和工具工作会被
-中止，但 `AgentFinished`、SessionRecorder 和其他终态观察者仍必须完成。当前也没有
-Steering / Follow-up 队列，因此 `BaseAgent.abort()` 只负责当前活动 Run。
+公开的 `SessionTreeStorage` 在 `SessionJournalStorage` 之上统一 `records()`、`head()`、
+`list_branches()`、`fork()`、`rollback()` 和 `prepare_retry()`。上层可以仅依赖协议编程，
+不必绑定 JSONL 具体实现。
 
-### 4.6 流式消息语义
+### 6.3 JSONL 读取成本随 Journal 线性增长
 
-Pi 使用 `message_start / message_update / message_end`，Update 携带完整 partial message
-快照，并在 Agent State 中维护 `streamingMessage`。SimAgentPlg 发布不可变且分型的
-`AssistantTextDelta / AssistantThinkingDelta`，partial 不进入 `AgentState`；
-`MessageCompleted` 仍是消息提交点。
-Pi 的 `EventStream` 通过单独的 `result()` 返回最终消息，SimAgentPlg 使用流内唯一
-`ModelResponseCompleted`，同时保留 `BaseAgent.run() -> AgentRunResult` 的稳定终态 API。
+每次操作都会验证完整文件并重建索引；任意节点投影还需要沿父链回放。当前 Checkpoint
+可以缩短语义重建，但没有持久 Sidecar Index、Checkpoint Policy 或归档策略。长生命周期
+服务需要明确性能上限。
 
-### 4.7 工具进度语义
+可重复基准位于 `benchmarks/session_journal.py`。本机 1,000 条小型 Checkpoint Journal
+约 401 KB，完整 Load 约 14.7 ms；从空文件逐条构建约 7.68 s，平均追加约 7.68 ms。
+这验证了当前规模仍可用，但也确认逐次追加的累计成本呈二次增长。现阶段不增加 Index；
+当真实 Session 接近数千至数万 Record 时，再设计可完全从 JSONL 重建的 Sidecar Index。
 
-Pi 通过 `execute(toolCallId, params, signal, onUpdate)` 的同步 `onUpdate` 回调发布
-`tool_execution_update`，更新值沿用部分 `AgentToolResult` 的 content/details 形状；
-内部收集异步事件发布，并在工具 Promise 结束后忽略迟到回调。
+### 6.4 Canonical Tool Definition——已完成 OpenAI-first 基础版
 
-SimAgentPlg 使用作用域限定的异步 `ToolProgressReporter` 和类型化
-`ToolProgressUpdate(message, data)`。Progress 事件继续使用统一事件信封，并携带 turn
-和完整 `ModelToolCall`；`await report()` 提供确定性顺序和自然背压。两者都不把部分
-结果写入最终模型 transcript，但 SimAgentPlg 不要求 UI 进度伪装成模型可见的 Tool
-Result。Pi 已支持并行工具执行，SimAgentPlg 当前仍保持顺序执行。
+`ToolDefinition` 已成为 Core 内部事实来源，统一保存 Name、Description、Parameters、可选
+`strict` 和 `ToolEffect`。`MethodToolHandler` 同时接受强类型定义和旧 OpenAI 字典；旧字典只在
+构造边界归一化一次，`.tools` 继续提供兼容的 OpenAI 请求视图。Tool Runtime 的路由、重复名称
+校验、副作用调度和 Agent 日志不再解析 `tool["function"]["name"]`。
 
-### 4.8 Usage 与预算语义
+该设计明确是 OpenAI-first，不尝试抽取所有 Provider 的最低公分母。Parameters 只做 JSON
+可序列化校验，具体 JSON Schema 能力仍由 OpenAI-compatible Provider 决定。未来如有真实多
+Provider 需求，可以在稳定定义外增加 Adapter 转换，而无需现在预建复杂抽象。
 
-Pi 的 `Usage` 是每个 `AssistantMessage` 的必需字段，包含 input/output、cache、reasoning
-和按模型价格计算的 cost；错误路径通常构造全零 Usage。Compaction Helper 使用最近一条
-有效 Assistant Usage 加后续消息估算 context pressure，并已有 Session Tree Compaction
-结构，但本地 Harness 文档仍注明自动压缩决策点尚未接通。
+### 6.5 Provider 广度——按需求延后
 
-SimAgentPlg 将 Usage 作为 `ModelResponseCompleted` 的可选终态元数据，并明确区分
-unknown 与 zero；费用计算不进入第一版 Core。Usage 在 Agent/Session 记录中作为内部
-metadata 保存，但投影给 Provider 时剥离。SimAgentPlg 还直接在 `AgentRunResult` 提供
-`RunUsage`，并通过 `RuntimePolicy.max_run_tokens` 给出结构化的跨请求预算停止原因。
+目前只有 OpenAI-compatible Adapter。这是当前产品边界，不再视为近期优先缺口；只有真实接入
+需求出现后，才验证 Thinking、Cache Usage、Tool Schema 和错误分类差异。
 
-### 4.9 Context Pressure 与压缩边界
+### 6.6 Event Backpressure 是同步的
 
-Pi 的 `estimateContextTokens()` 使用最近一次有效 Assistant Usage 加后续消息估算，并以
-`chars / 4` 作为默认消息估算；Coding Agent 的 `AgentSession` 已连接阈值触发、overflow
-检测、摘要生成、Session Tree Compaction Entry 和可选自动重试。Pi 还允许在 Turn 中间
-切分，并为被拆开的 Turn 生成 prefix summary。
+事件按顺序 await，保证确定性和终态屏障，但慢 UI 或网络 Sink 会拖慢 Agent。未来应提供
+有界缓冲 Sink Adapter，而不是在 Core 中创建无界后台任务。
 
-SimAgentPlg 当前把估算、策略与行为拆开。Core 的默认估算对非 ASCII 内容更保守，且
-把当前 Tool Schema 纳入完整启发式下界；Usage 缺失继续保持 unknown 语义。第一版只在
-完整 User Turn 边界准备切分，暂不引入 mid-turn summary。压力事件仍是只读的；显式
-`BaseAgent.compact()` 通过派生 Agent 提供的 Compactor 执行摘要，并在线性 Session 中
-记录紧凑快照，不引入 Pi 的 Session Tree。这样 WebAgent、MCP Agent 和 CodeAgent 可以
-共享压力与原子替换机制，但使用不同的摘要模型和 Prompt。
+### 6.7 Tool Schema Validation——已完成基础版
 
-## 5. 当前能力矩阵
+`ToolSchemaValidationMiddleware` 使用 `jsonschema` 验证 Canonical `parameters`，支持 Schema
+选择的标准 Draft 语义。它是显式可选 Middleware，不改变未注册它的旧 Agent 行为，也不把
+Provider `strict` 当作本地安全边界。
 
-| Harness 能力 | 当前实现 | 状态 |
-|---|---|---|
-| Agent Loop | `AgentOrchestrator` | 已具备 |
-| 结构化终止 | `AgentRunResult`、`ToolControl` | 已具备 |
-| Runtime Policy | `RuntimePolicy` | 已具备 |
-| Provider 边界 | `ModelAdapter` | 已具备，待多 Provider 验证 |
-| Tool Runtime | `ToolRuntime` + Handler | 已具备 |
-| Tool Middleware | `ToolMiddleware` | 基础版 |
-| MCP | `McpToolHandler` | 已具备，可选 |
-| Skill Resource | `SkillManager` + ContextBuilder | 已具备 |
-| Context Projection | `AgentContextBuilder` | 基础版 |
-| Event Stream | `AgentEvent` + `AgentEventSink` | 基础版已具备 |
-| Hook Protocol | Tool Middleware only | 部分具备 |
-| Streaming Output | Text / Thinking Delta | 基础版已具备 |
-| External Abort | `CancellationToken` + `BaseAgent.abort()` | 已具备 |
-| Wait for Idle | `BaseAgent.wait_for_idle()` | 已具备 |
-| Session Storage | `SessionStorage` + Memory 实现 | 基础版已具备 |
-| Resume | `AgentSession.messages` + `BaseAgent.reset()` | 线性恢复已具备 |
-| Fork / Tree | 无 | 未实现 |
-| Steering / Follow-up | 无 | 未实现 |
-| Context Pressure | `ContextUsageEstimate` + `ContextBudget` | 基础版已具备 |
-| Compaction Preparation | `CompactionPolicy` + 完整 Turn 切分 | 基础版已具备 |
-| Explicit Compaction | `Compactor` + `SummaryEntry` + `compact()` | 基础版已具备 |
-| Compaction Session Resume | `SessionCompaction` | 基础版已具备 |
-| Auto Compaction / Overflow Recovery | 无 | 未实现 |
-| Token / Usage Budget | `ModelUsage` + `RunUsage` + `max_run_tokens` | 基础版已具备 |
-| Parallel Tool Calls | 当前顺序执行 | 未实现 |
-| Tool Progress | `ToolProgressReporter` + `ToolProgressed` | 基础版已具备 |
-| Dynamic Tool Set | 构造时为主 | 未实现 |
-| ExecutionEnv | 无 | 未实现 |
-| CodeAgent Tools | 不属于 Core | 待派生 Agent 实现 |
-
-## 6. 仍需注意的 Core 边界
-
-### 6.1 Context 类型仍是过渡设计
-
-`ContextBuildResult` 同时保留：
-
-```python
-agent_messages: tuple[AgentMessage, ...]
-llm_messages: tuple[AgentMessage, ...]
-```
-
-两者已经不再相同：`agent_messages` 保留 Usage 等 Harness metadata，
-`llm_messages` 是经过 Context Transform 并移除内部字段后的 Provider-safe 投影。
-后续 Compaction、Summary Entry 和自定义内部消息继续复用这一边界，不再计划简单合并。
-
-### 6.2 Tool Schema 仍偏 OpenAI-compatible
-
-`ModelAdapter` 已隔离 Provider Client 和响应类型，但 Handler 暴露的 Tool Schema
-仍使用 OpenAI function-calling 字典形状。未来接入非兼容 Provider 时，需要决定：
-
-- 将当前形状定义为 Core Canonical Tool Schema，由 Adapter 转换；或
-- 新增强类型的 `ToolDefinition`，彻底移除 Provider 风格字段。
-
-这不阻塞当前 Harness 建设，但应在第二个 Provider Adapter 前解决。
-
-### 6.3 Skill 显式选择仍由 Orchestrator 激活
-
-Orchestrator 已不执行 Skill Tool，但 `_activate_explicit_skill()` 仍属于
-Skill-specific 任务准备逻辑。只读事件协议不能修改行为；未来建立行为型 Hook 后，
-可将它迁移到通用的 `before_task` 或 Context Transform Hook。
+当前不启用外部 Format Checker，也不提供领域语义验证；路径范围、金额上限等约束继续属于
+Tool Policy。远程 Schema Registry、动态 Schema 和自定义 Format 暂不进入 Core。
 
 ## 7. 后续建设顺序
 
-### 阶段一：稳定执行内核——已完成
+### 阶段一：执行内核——已完成
 
-- `RuntimePolicy`
-- `AgentRunResult`
-- `ToolControl`
-- `AgentOrchestrator`
-- `ToolRuntime`
-- Core 与 CodeAgent 工具边界拆分
-- `ModelAdapter`
-- Skill Resource 化
-- 移除 `has_handler_tools`
+- Agent Loop、Runtime Policy、Structured Result
+- Provider Adapter、Tool Runtime、Skill Resource
+- Cancellation、Streaming、Progress、Usage Budget
 
-### 阶段二：统一事件协议——已完成基础版
+### 阶段二：Context 与 Compaction——已完成基础版
 
-当前 `agent/events.py` 提供不可变事件数据：
+- Context Pressure、Budget 和完整 Turn Preparation
+- Explicit Compaction、ModelCompactor
+- Auto Compaction 和 Context Overflow Recovery
 
-- `AgentStarted`
-- `TurnStarted`
-- `ContextPressureEvaluated`（配置 Context Policy 时）
-- `AssistantTextDelta`
-- `AssistantThinkingDelta`
-- `MessageCompleted`
-- `ToolStarted`
-- `ToolProgressed`
-- `ToolCompleted`
-- `TurnCompleted`
-- `AgentFinished`
+### 阶段三：Durable Session Tree——已完成基础版
 
-同时定义最小发布接口：
+- Versioned Codec 和 Semantic JSONL Journal
+- Checkpoint、Crash Tail Recovery 和 Replay
+- Branch Head、Checkout、Fork、Rollback、Retry
+- Branch-aware SessionRecorder 和 Head Conflict
 
-```python
-class AgentEventSink(Protocol):
-    async def emit(self, event: AgentEvent) -> None: ...
-```
+### 阶段四：Session Journal Hardening——已完成
 
-`AgentEvent` 信封包含 `agent_id`、`run_id` 和 `sequence`。第一版只做观察事件，
-不允许 Hook 修改行为；测试已覆盖文本完成、工具调用、终态控制、Provider 异常、
-重复工具调用和 Sink 异常隔离。
+- 跨实例、跨进程 read-validate-append 原子性
+- 后端无关的 `SessionTreeStorage` 协议
+- 多进程竞争和 Crash Recovery 测试
+- 锁超时、取消和异常退出恢复
+- 长 Journal 基准；Sidecar Index 延后到真实规模需要时
 
-### 阶段三：Session——已完成基础版
+### 阶段五：Harness 行为控制面——进行中
 
-```text
-AgentSession
-SessionStorage
-MemorySessionStorage
-SessionRecorder
-CompositeAgentEventSink
-```
+- Steering Queue、Safe Point、回执和 Session 审计——已完成基础版
+- Follow-up Queue、Run Handle、失败策略和终态屏障——已完成基础版
+- Continue / Resume-safe-point、Run Intent 和 Session 回放——已完成基础版
+- 独立于只读 Event 的 `after_turn` Behavior Hook——已完成基础版
+- Queue 与 Session Journal 的进程内 / Durable 边界——已明确
+- `before_model` 等扩展决策点——按真实需求延后
 
-已实现线性 Session、内存保存和恢复。`JsonlSessionStorage` 属于可选持久化 Adapter，
-Fork、Tree 和 Branch Summary 留待线性语义稳定后再建设。
+### 阶段六：工具调度与 Provider 扩展
 
-### 阶段四：运行控制——基础版已完成
+- Parallel Tool Calls 与 Side-effect Policy——已完成基础版
+- Canonical Tool Definition——已完成 OpenAI-first 基础版
+- Tool Execution Policy Middleware——已完成基础版
+- Tool Argument Schema Validation Middleware——已完成基础版
+- Dynamic Tool Set——按当前静态工具集设计延后
+- 第二个真实 Provider Adapter——按真实需求延后
 
-- Cancellation Token
-- `abort()`
-- `wait_for_idle()`
-- 取消传播到 Model Adapter、Tool Runtime、Middleware、Handler 和 MCP
-- 确定性的 Tool、Turn、Agent 终态事件
-- 取消后的 Agent 复用
-
-### 阶段五：流式输出——基础版已完成
-
-- Provider Stream Adapter
-- Text Delta
-- Thinking Delta（观察型，不持久化）
-- complete-only Adapter 兼容
-- OpenAI Tool Call 流式组装
-- 流式 abort 与最终消息原子提交
-- Tool Progress Event、取消与迟到更新保护
-- subprocess 取消在 ExecutionEnv 阶段落地
-
-### 阶段六：上下文管理
-
-- Token Usage 与 Run Budget——基础版已完成
-- Context Pressure Estimate——基础版已完成
-- Context Window Budget——基础版已完成
-- Compaction Policy 与 Preparation——基础版已完成
-- Summary Entry 与显式 Compactor——基础版已完成
-- Session Compaction Resume——基础版已完成
-- Auto Compaction 与 Overflow Recovery
-- Context Transform Hook
-
-### 阶段七：ExecutionEnv 与 CodeAgent
+### 阶段七：ExecutionEnv 与派生 CodeAgent
 
 ```text
 CodeAgent
@@ -677,18 +592,26 @@ CodeAgent
 
 ## 8. 下一步任务建议
 
-下一步建议实现 Auto Compaction Decision Point 与 Overflow Recovery，将已经稳定的压力
-事实、Preparation 和显式 Compactor 接入 Agent Loop，但仍保持可关闭和最多一次恢复。
+Tool Argument Validation 完成后，下一项建议是 **Tool Policy Decision Audit Events**。当前
+拒绝结果可以通过 `ToolCompleted` 和 Session Tool Message 审计，但被允许的 Rule、审批请求和
+审批结果没有独立的只读事件，长期运行服务难以回答“为什么这个副作用调用被允许”。
 
-推荐下一轮建立：
+### 8.1 建议实现范围
 
-1. 增加 Orchestrator 内部的行为型 `before_model_request` 决策点，不能通过只读 Event
-   Sink 回调 `agent.compact()`，否则会造成操作锁重入。
-2. 达到 Context 阈值时，在同一 Run 和 CancellationToken 下执行一次 Compactor，再重建
-   当前请求上下文。
-3. 明确 auto compaction 失败时是继续原请求还是返回结构化失败，默认采用安全失败。
-4. 在 Provider Adapter 层增加标准化 Context Overflow 分类，不依赖错误字符串散落在
-   Orchestrator。
-5. Overflow 最多执行一次 compact-and-retry，防止永久重试循环；成功响应超过窗口时只
-   压缩，不重复已经完成的模型调用。
-6. 增加阈值触发、overflow、Compactor 失败、abort 和 Session 恢复的端到端测试。
+1. 增加只读 `ToolPolicyEvaluated`、`ToolApprovalRequested` 和 `ToolApprovalResolved` 事件。
+2. 事件只包含 `tool_call_id`、Tool Name、Action、`rule_id`、安全 Reason 和审批状态，不包含参数。
+3. 事件由现有 `AgentEventEmitter` 顺序发布，不允许 Event Sink 改写 Policy 决策。
+4. 审批请求和结果必须成对；异常、取消和缺少 Approver 也有明确 Resolution。
+5. 并行调用允许 Policy Event 交错，但最终 Tool Result 和 Session 顺序继续保持确定性。
+6. 是否持久化独立 Policy Journal Record 需显式决定，不能把只读临时事件自动混入历史。
+
+### 8.2 验收标准
+
+- 每个 Policy/Approval 决策都有稳定关联的 `run_id`、`tool_call_id` 和事件序号。
+- 允许、拒绝、无 Approver、审批拒绝、审批异常和取消都有确定性事件测试。
+- Event Sink 失败仍被隔离，不得改变工具是否执行。
+- 事件不泄露 Arguments，Session 持久化策略有明确测试和文档。
+- 现有 ToolCompleted、并行提交、Cancellation 和 Policy fail-closed 语义保持不变。
+
+完成 Policy 审计事件后，再根据真实使用数据决定是否增加 Tool Output 大小边界或领域级规则库；
+Dynamic Tool Set 和第二个 Provider 继续按需求延后。

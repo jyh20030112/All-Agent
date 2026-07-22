@@ -4,6 +4,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from simagentplg.agent.result import AgentRunResult
 from simagentplg.agent.types import AgentMessage
 
 
@@ -30,6 +31,7 @@ class AgentState:
     active_skill_name: str | None = None
     result: str | None = None
     error: str | None = None
+    last_run_result: AgentRunResult | None = None
 
     def reset(self, messages: list[AgentMessage]) -> None:
         """Replace conversation history and clear the current task state."""
@@ -42,6 +44,7 @@ class AgentState:
         self.active_skill_name = None
         self.result = None
         self.error = None
+        self.last_run_result = None
 
     def begin_task(self, task: str) -> None:
         """Start a new task while preserving the conversation history."""
@@ -53,7 +56,20 @@ class AgentState:
         self.active_skill_name = None
         self.result = None
         self.error = None
+        self.last_run_result = None
         self.messages.append({"role": "user", "content": task})
+
+    def begin_continue(self) -> None:
+        """Start a new Run without adding another user task message."""
+
+        self.task = None
+        self.status = AgentStatus.RUNNING
+        self.turn = 0
+        self.no_tool_response_count = 0
+        self.active_skill_name = None
+        self.result = None
+        self.error = None
+        self.last_run_result = None
 
     def advance_turn(self) -> int:
         """Record and return the next model turn number."""
@@ -116,4 +132,5 @@ class AgentState:
             active_skill_name=self.active_skill_name,
             result=self.result,
             error=self.error,
+            last_run_result=self.last_run_result,
         )

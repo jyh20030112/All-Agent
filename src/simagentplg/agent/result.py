@@ -22,6 +22,7 @@ class StopReason(StrEnum):
     TOOL_COMPLETION = "tool_completion"
     TOOL_REJECTED = "tool_rejected"
     TOOL_CANCELLED = "tool_cancelled"
+    BEHAVIOR_STOP = "behavior_stop"
     EXTERNAL_ABORT = "external_abort"
     EMPTY_RESPONSE = "empty_response"
     MAX_STEPS = "max_steps"

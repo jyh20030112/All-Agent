@@ -16,7 +16,8 @@ Every `BaseAgent` declares its own immutable `agent_id`.
 ## Examples
 
 - `01_stateful_chat.py`: plain chat, conversation memory, and `reset()`
-- `02_custom_tool.py`: a custom atomic tool with `MethodToolHandler`
+- `02_custom_tool.py`: an OpenAI-first canonical `ToolDefinition` registered
+  through `MethodToolHandler`
 - `04_mcp_tools.py`: opt-in MCP integration with a custom config file
 - `06_skill.py`: local skill discovery, indexing, template, and sample injection
 - `07_event_observers.py`: ordered lifecycle events and multiple independent

@@ -55,6 +55,16 @@ def main() -> None:
         "extra == 'mcp'" in line for line in fastmcp_requirements
     ):
         raise AssertionError("fastmcp must only be required by the mcp extra")
+    for dependency in ("jsonschema", "referencing"):
+        requirements = [
+            line
+            for line in metadata.splitlines()
+            if line.startswith(f"Requires-Dist: {dependency}")
+        ]
+        if not requirements or any("extra ==" in line for line in requirements):
+            raise AssertionError(
+                f"{dependency} must be declared as a core wheel dependency"
+            )
 
 
 if __name__ == "__main__":

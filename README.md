@@ -18,9 +18,13 @@ Requires Python 3.12 or newer.
 - Structured `AgentRunResult`, `RunStatus`, and `StopReason`
 - Explicit `RuntimePolicy` for loop and completion behavior
 - `AgentContextBuilder` for non-mutating per-turn context projection
+- OpenAI-first canonical `ToolDefinition` with legacy dictionary compatibility
 - Composable `BaseHandler` and `MethodToolHandler` tool contracts
 - `ToolRuntime` lifecycle, routing, middleware, and repeat-call protection
 - Generic `ToolMiddleware` interception
+- Optional fail-closed Tool Execution Policy middleware with approval and
+  atomic per-run call limits
+- Optional local JSON Schema argument validation before policy and handlers
 - Structured, cancellable Tool Progress events
 - Provider-neutral token Usage and per-run budget guards
 - Context pressure estimates, independent window budgets, and non-mutating
@@ -146,6 +150,186 @@ An externally aborted run returns `RunStatus.CANCELLED` with
 Model adapters, tool middleware, and tool handlers receive the run's
 `CancellationToken`; long-running handlers should also use `try/finally` to
 release resources such as subprocesses.
+
+### Steering an active run
+
+`steer()` queues guidance for the active Run without interrupting an in-flight
+model response or Tool call:
+
+```python
+receipt = await agent.steer(
+    "Do not modify the database; produce a migration plan instead."
+)
+if not receipt.accepted:
+    print(receipt.status)
+```
+
+Each Run owns a bounded FIFO queue; configure it with
+`BaseAgent(..., steering_queue_capacity=16)`. Submission returns a typed
+`ControlReceipt` with `ACCEPTED`, `AGENT_IDLE`, `QUEUE_FULL`, or `RUN_CLOSING`
+instead of silently dropping input. Accepted guidance is consumed immediately
+before the next Provider context is finalized, including a model retry after
+Context Overflow recovery. A Tool that has already started always settles
+before Steering reaches the model.
+
+Applied guidance becomes a normal User message in Agent history and emits
+`SteeringApplied`; `SessionRecorder` stores it as `steering_applied`. If the Run
+ends or is cancelled before another model-call safe point, the pending input is
+not persisted and emits `SteeringDiscarded`. An accepted receipt therefore
+means “queued”, while these events expose the final applied/discarded outcome.
+
+### Follow-up runs
+
+`follow_up()` queues an independent Run behind the active Run chain and returns
+a waitable handle:
+
+```python
+import asyncio
+
+initial = asyncio.create_task(agent.run(task="Inspect the deployment failure."))
+await asyncio.sleep(0)  # allow the Run chain to become active
+follow_up = await agent.follow_up("Now propose the smallest safe fix.")
+
+initial_result = await initial
+if follow_up.accepted:
+    follow_up_result = await follow_up.wait()
+```
+
+Each Follow-up receives its own `run_id`, lifecycle events, Session Run, and
+`AgentRunResult`. It starts only after the previous `AgentFinished` and every
+awaited Event Sink have settled. A Run-chain gate keeps already-waiting direct
+`run()`, `compact()`, and lifecycle operations from interleaving ahead of the
+Follow-up FIFO.
+
+Configure the queue with `follow_up_queue_capacity`. Rejected handles expose an
+immediate `ControlReceipt` with `AGENT_IDLE`, `QUEUE_FULL`, or `RUN_CLOSING`, and
+`wait()` raises `FollowUpRejectedError`. By default, a failed or cancelled Run
+discards remaining accepted handles with `FollowUpDiscardedError`; opt into
+`FollowUpFailurePolicy.CONTINUE` to keep processing. Cancelling one caller's
+`wait()` does not cancel the queued Run. `shutdown()` discards pending
+Follow-ups, while `wait_for_idle()` includes accepted Follow-ups and their
+terminal sinks.
+
+Pending Follow-ups remain process-local. `SessionRecorder` writes `run_started`
+only when a Follow-up actually begins, so the queue is not presented as a
+durable job system.
+
+### Continue existing history
+
+`continue_run()` starts a distinct Run from committed history without appending
+another User message:
+
+```python
+if agent.can_continue:
+    result = await agent.continue_run()
+else:
+    print(agent.continue_rejection_reason)
+```
+
+Continue allocates a new `run_id`, emits `AgentContinued`, and is persisted as
+`run_continued`. Session Runs expose `SessionRunIntent.TASK` or
+`SessionRunIntent.CONTINUE`, with `task=None` for Continue. Restoring a finished
+Session also restores the latest terminal result, so a new Agent instance can
+continue the checked-out history.
+
+Only explicit safe terminal reasons are continuable. Active Agents, Shutdown,
+missing previous Runs, unsupported failure/cancellation reasons, and unmatched
+Tool Calls raise `ContinueRejectedError` with a typed
+`ContinueRejectedReason`. Continue reuses Cancellation, Steering safe points,
+Follow-up chaining, automatic Compaction, terminal Event Sink barriers, and
+`wait_for_idle()` semantics.
+
+### Behavior Hooks
+
+`BehaviorHook` controls whether a non-terminal full Turn may advance to the
+next Provider request. It is deliberately separate from read-only Event Sinks
+and Tool Middleware:
+
+```python
+from simagentplg import BehaviorDecision
+
+
+class StopAfterFirstToolTurn:
+    async def after_turn(self, snapshot, *, cancellation):
+        if snapshot.turn >= 1:
+            return BehaviorDecision.stop("paused at a safe Turn boundary")
+        return None
+
+
+agent = BaseAgent(
+    model,
+    agent_id="controlled-agent",
+    behavior_hooks=[StopAfterFirstToolTurn()],
+)
+```
+
+The decision point runs after `TurnCompleted` work, including every committed
+Tool Result, and before another `TurnStarted` or Provider request. Hooks receive
+a detached `TurnSnapshot` plus the Run's `CancellationToken`; they never receive
+mutable `AgentState`. Multiple Hooks are awaited in declaration order, and the
+first STOP short-circuits the rest.
+
+STOP completes the Run with `StopReason.BEHAVIOR_STOP`, normal `AgentFinished`
+and Session `run_finished` records. This is a safe Continue boundary. Hook
+exceptions become `RUNTIME_ERROR`; abort interrupts a slow Hook, and
+`wait_for_idle()` includes Hook backpressure. Hooks are not invoked after a Turn
+that already produced a terminal result.
+
+### Parallel read-only tools
+
+Parallel Tool Calls are opt-in at both the tool and Agent levels. A handler
+must explicitly declare a tool `READ_ONLY`, and the Runtime Policy must enable
+parallel calls:
+
+```python
+from simagentplg import (
+    MethodToolHandler,
+    RuntimePolicy,
+    ToolDefinition,
+    ToolEffect,
+)
+
+LOOKUP_TOOL = ToolDefinition(
+    name="lookup",
+    description="Look up one value.",
+    parameters={
+        "type": "object",
+        "properties": {"key": {"type": "string"}},
+        "required": ["key"],
+    },
+    effect=ToolEffect.READ_ONLY,
+)
+
+
+class LookupHandler(MethodToolHandler):
+    def __init__(self) -> None:
+        super().__init__((LOOKUP_TOOL,))
+
+
+agent = BaseAgent(
+    model,
+    agent_id="parallel-lookups",
+    handlers=[LookupHandler()],
+    runtime_policy=RuntimePolicy(
+        parallel_tool_calls=True,
+        max_parallel_tool_calls=4,
+    ),
+)
+```
+
+The scheduler only parallelizes contiguous read-only calls. Unannotated,
+unknown, and `SIDE_EFFECTING` tools remain sequential and form barriers between
+read batches. The default policy is fully sequential, so existing handlers do
+not change behavior after upgrading.
+
+Within a parallel batch, `ToolStarted` is emitted in source order and Progress
+may interleave by `tool_call_id`. Handlers execute concurrently, but
+`ToolCompleted`, Agent history, and Session Tool Messages are committed in the
+Assistant Tool Call order. Errors remain ordinary Tool Results. External abort
+settles every active and pending call; if a read-only batch returns a terminal
+Tool Control, active peers settle before the first terminal decision in source
+order stops the Run. Declaring `READ_ONLY` is a concurrency-safety contract for
+the handler and its middleware, not an automatic side-effect inference.
 
 ### Streaming responses
 
@@ -364,11 +548,20 @@ an interrupted write is ignored and repaired before the next append. Invalid
 JSON in a completed line and unsupported journal schema versions raise
 `SessionSerializationError` instead of looking like a missing Session.
 
+`JsonlSessionStorage` coordinates every read-validate-append transaction with a
+stable `.jsonl.lock` sidecar. The lock combines process-local coordination with
+a POSIX advisory file lock, so separate storage instances and Python processes
+cannot allocate the same revision or silently replace a branch head. Conditional
+appends still report stale heads as `SessionConflictError`; lock acquisition
+timeouts report `SessionLockTimeoutError`. Configure the deadline with
+`JsonlSessionStorage(root, lock_timeout=...)`, or pass `None` to wait until the
+operation is cancelled. Lock waits run outside the event loop.
+
 `restore_session()` verifies Agent identity and rejects unfinished Runs. Core
 does not replay an interrupted Tool call because it may already have produced
-an external side effect. Separate processes may read completed snapshots, but
-concurrent writers to the same Session are not yet coordinated in this
-file-backed implementation.
+an external side effect. The file-backed lock contract targets local POSIX
+filesystems; network filesystem deployments must verify their advisory-lock
+semantics or provide another `SessionTreeStorage` backend.
 
 ## Runtime policy
 
@@ -383,6 +576,8 @@ policy = RuntimePolicy(
     max_repeated_tool_calls=3,
     max_run_tokens=None,
     require_explicit_finish=False,
+    parallel_tool_calls=False,
+    max_parallel_tool_calls=None,
 )
 ```
 
@@ -412,23 +607,29 @@ an async `do_add()` method:
 from collections.abc import Mapping
 from typing import Any
 
-from simagentplg import CancellationToken, MethodToolHandler, StepOutcome
+from simagentplg import (
+    CancellationToken,
+    MethodToolHandler,
+    StepOutcome,
+    ToolDefinition,
+    ToolEffect,
+)
 
-ADD_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "add",
-        "description": "Add two numbers.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "left": {"type": "number"},
-                "right": {"type": "number"},
-            },
-            "required": ["left", "right"],
+ADD_TOOL = ToolDefinition(
+    name="add",
+    description="Add two numbers.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "left": {"type": "number"},
+            "right": {"type": "number"},
         },
+        "required": ["left", "right"],
+        "additionalProperties": False,
     },
-}
+    effect=ToolEffect.READ_ONLY,
+    strict=True,
+)
 
 
 class MathHandler(MethodToolHandler):
@@ -457,7 +658,18 @@ agent = BaseAgent(
 ```
 
 Duplicate tool names fail during startup instead of being silently
-overwritten.
+overwritten. `ToolDefinition` is the Core source of truth for OpenAI function
+name, description, Parameters, optional `strict`, and execution Effect.
+`to_openai_tool()` returns the provider request shape without exposing Core-only
+Effect metadata.
+
+Existing OpenAI function-calling dictionaries remain accepted and are
+normalized once when the Handler is created. The compatibility form is not
+deprecated and does not require an immediate migration:
+
+```python
+MethodToolHandler((OPENAI_TOOL_DICTIONARY,))
+```
 
 ### Tool progress
 
@@ -510,8 +722,7 @@ protocol.
 
 ## Tool middleware
 
-`ToolMiddleware` decorates a tool execution without owning concrete tool
-policy:
+`ToolMiddleware` is the single interception chain around tool execution:
 
 ```python
 from simagentplg import ToolMiddleware
@@ -525,8 +736,115 @@ class AuditMiddleware(ToolMiddleware):
         return result
 ```
 
-Approval UI and shell-specific risk policies should be implemented by the
-derived agent, not by the core.
+The optional `ToolPolicyMiddleware` is one concrete middleware built on that
+same chain. It does not add a second policy path or a special `BaseAgent`
+parameter:
+
+```python
+from simagentplg import (
+    RuleBasedToolPolicy,
+    ToolApprovalDecision,
+    ToolEffect,
+    ToolPolicyAction,
+    ToolPolicyMiddleware,
+    ToolPolicyRule,
+)
+
+
+class ConsoleApprover:
+    async def approve(self, request):
+        # A real application can bridge this request to its UI or RPC layer.
+        return ToolApprovalDecision(approved=False, reason="operator denied")
+
+
+policy = RuleBasedToolPolicy(
+    (
+        ToolPolicyRule(
+            rule_id="approve-side-effects",
+            action=ToolPolicyAction.REQUIRE_APPROVAL,
+            effects=frozenset({ToolEffect.SIDE_EFFECTING}),
+            max_calls_per_run=5,
+            reason="this tool can change external state",
+        ),
+        ToolPolicyRule(
+            rule_id="allow-reads",
+            action=ToolPolicyAction.ALLOW,
+            effects=frozenset({ToolEffect.READ_ONLY}),
+            max_calls_per_run=20,
+        ),
+    ),
+    default_action=ToolPolicyAction.DENY,
+)
+
+agent = BaseAgent(
+    model,
+    agent_id="policy-agent",
+    handlers=[handler],
+    middlewares=[
+        ToolPolicyMiddleware(policy, approver=ConsoleApprover()),
+        AuditMiddleware(),
+    ],
+)
+```
+
+Rules use ordered, first-match semantics and may select exact tool names,
+`ToolEffect`, and a synchronous or asynchronous `when(context)` predicate.
+`max_calls_per_run` reserves attempts atomically, including parallel read-only
+calls, and resets at each Agent Run start. Approval is fail-closed: a missing
+approver, an exception, an invalid decision, or a denied request returns
+`ToolControl.REJECT` without invoking the handler. Rejection payloads include
+the tool, safe reason, and matching `rule_id`, but never echo arguments.
+
+Core supplies the policy/approval protocol, not an approval UI or
+shell/filesystem-specific risk rules. Those remain application concerns.
+
+`ToolSchemaValidationMiddleware` can be placed before policy so structurally
+invalid model arguments never consume policy limits, request approval, or
+reach a handler:
+
+```python
+from simagentplg import (
+    ToolPolicyMiddleware,
+    ToolSchemaValidationMiddleware,
+)
+
+agent = BaseAgent(
+    model,
+    agent_id="validated-agent",
+    handlers=[handler],
+    middlewares=[
+        ToolSchemaValidationMiddleware(max_errors=8),
+        ToolPolicyMiddleware(policy, approver=approver),
+        AuditMiddleware(),
+    ],
+)
+```
+
+The middleware compiles each canonical `ToolDefinition.parameters` schema
+during Agent startup. An invalid registered schema raises
+`ToolSchemaConfigurationError` and rolls back startup. A model argument
+failure instead becomes a normal, non-terminal Tool Result:
+
+```json
+{
+  "status": "error",
+  "tool": "transfer",
+  "code": "invalid_tool_arguments",
+  "errors": [
+    {
+      "path": "/amount",
+      "keyword": "type",
+      "message": "value does not match the required type"
+    }
+  ]
+}
+```
+
+Error paths use JSON Pointer. Messages describe the failed rule without
+echoing argument values, and `max_errors` bounds the payload. Tools without a
+parameters schema pass through unchanged. Validation results use
+`ToolControl.CONTINUE`, so the model can correct its call; permission denial
+remains the distinct terminal `ToolControl.REJECT` path.
 
 ## MCP tools
 
@@ -594,6 +912,7 @@ Orchestration + State + Context + Runtime Policy + Run Result
 + Provider Streaming + Tool Progress + Usage Accounting + Run Budget
 + Context Pressure + Compaction Preparation
 + Model Compactor + Summary Entry + Durable Session Journal
++ Canonical Tool Definition + OpenAI Schema Compatibility View
 ```
 
 Derived agents own concrete capabilities and policies:
@@ -682,13 +1001,15 @@ The package root exports:
 - Agent: `BaseAgent`, `AgentOrchestrator`, `AgentState`, `AgentStatus`
 - Providers: `ModelAdapter`, `OpenAIModelAdapter`, `ModelConfig`, `AssistantMessage`, `ModelToolCall`, `ModelUsage`, `ModelStreamEvent`, `ModelTextDelta`, `ModelThinkingDelta`, `ModelResponseCompleted`, `ModelErrorKind`, `ModelProviderError`, `ContextOverflowError`, `ModelRateLimitError`, `ModelTimeoutError`, `ModelAuthenticationError`
 - Runtime: `RuntimePolicy`, `AgentRunResult`, `RunUsage`, `AgentRunError`, `RunStatus`, `StopReason`
+- Behavior: `BehaviorHook`, `BehaviorAction`, `BehaviorDecision`, `BehaviorHookError`, `TurnSnapshot`
 - Cancellation: `CancellationToken`, `CancellationSource`, `AgentCancelledError`
-- Events: `AgentEvent`, `AgentEventSink`, `CompositeAgentEventSink`, `AssistantTextDelta`, `AssistantThinkingDelta`, `ToolProgressed`, `ContextPressureEvaluated`, `CompactionStarted`, `CompactionCompleted`, `CompactionFailed`
-- Session: `AgentSession`, `SessionRecorder`, `SessionStorage`, `SessionJournalStorage`, `MemorySessionStorage`, `JsonlSessionStorage`, `SessionCompaction`, `SessionRecord`, `SessionRecordDraft`, `SessionRecordKind`, `SessionBranchIntent`, `SessionBranch`, `SessionCheckout`, `SessionRetry`, `DEFAULT_SESSION_BRANCH`, `SESSION_SCHEMA_VERSION`, `SESSION_JOURNAL_SCHEMA_VERSION`, `session_to_dict`, `session_from_dict`, `SessionError`, `SessionSerializationError`, `SessionStorageError`, `SessionConflictError`
+- Events: `AgentEvent`, `AgentEventSink`, `CompositeAgentEventSink`, `AgentContinued`, `AssistantTextDelta`, `AssistantThinkingDelta`, `ToolProgressed`, `SteeringApplied`, `SteeringDiscarded`, `ContextPressureEvaluated`, `CompactionStarted`, `CompactionCompleted`, `CompactionFailed`
+- Control: `ControlInputKind`, `ControlStatus`, `ControlInput`, `ControlReceipt`, `ContinueRejectedReason`, `ContinueRejectedError`, `FollowUpFailurePolicy`, `FollowUpDiscardReason`, `FollowUpHandle`, `FollowUpError`, `FollowUpRejectedError`, `FollowUpDiscardedError`
+- Session: `AgentSession`, `SessionRun`, `SessionRunIntent`, `SessionRecorder`, `SessionStorage`, `SessionJournalStorage`, `SessionTreeStorage`, `MemorySessionStorage`, `JsonlSessionStorage`, `SessionCompaction`, `SessionRecord`, `SessionRecordDraft`, `SessionRecordKind`, `SessionBranchIntent`, `SessionBranch`, `SessionCheckout`, `SessionRetry`, `DEFAULT_SESSION_BRANCH`, `SESSION_SCHEMA_VERSION`, `SESSION_JOURNAL_SCHEMA_VERSION`, `session_to_dict`, `session_from_dict`, `SessionError`, `SessionSerializationError`, `SessionStorageError`, `SessionConflictError`, `SessionLockTimeoutError`
 - Context: `AgentContextBuilder`, `ContextBuildResult`, `ContextBudget`, `ContextUsageEstimate`, `CompactionPolicy`, `AutoCompactionPolicy`, `CompactionDecision`, `CompactionPreparation`, `MessageTokenEstimator`, `estimate_context_usage`, `prepare_compaction`
 - Compaction: `CompactionRuntime`, `Compactor`, `ModelCompactor`, `CompactionContextBuilder`, `CompactorOutput`, `CompactionRequest`, `CompactionResult`, `CompactionStatus`, `CompactionTrigger`, `SummaryEntry`
-- Tools: `StepOutcome`, `ToolControl`, `ToolProgressUpdate`, `ToolProgressReporter`, `BaseHandler`, `MethodToolHandler`, `McpToolHandler`
-- Middleware: `Middleware`, `ToolMiddleware`, `ToolCallContext`, `ToolNext`
+- Tools: `ToolDefinition`, `ToolDefinitionError`, `ToolEffect`, `StepOutcome`, `ToolControl`, `ToolProgressUpdate`, `ToolProgressReporter`, `BaseHandler`, `MethodToolHandler`, `McpToolHandler`
+- Middleware: `Middleware`, `ToolMiddleware`, `ToolCallContext`, `ToolNext`, `ToolExecutionPolicy`, `RuleBasedToolPolicy`, `ToolPolicyRule`, `ToolPolicyPredicate`, `ToolPolicyAction`, `ToolPolicyDecision`, `ToolPolicyMiddleware`, `ToolApprover`, `ToolApprovalRequest`, `ToolApprovalDecision`, `ToolSchemaValidationMiddleware`, `ToolSchemaConfigurationError`
 - Extensions: `McpServerManager`, `SkillManager`
 
 ## License

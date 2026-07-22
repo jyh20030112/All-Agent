@@ -12,23 +12,23 @@ from simagentplg import (
     OpenAIModelAdapter,
     StepOutcome,
     ToolControl,
+    ToolDefinition,
+    ToolEffect,
 )
 
-ADD_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "add",
-        "description": "Add two numbers.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "left": {"type": "number"},
-                "right": {"type": "number"},
-            },
-            "required": ["left", "right"],
+ADD_TOOL = ToolDefinition(
+    name="add",
+    description="Add two numbers.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "left": {"type": "number"},
+            "right": {"type": "number"},
         },
+        "required": ["left", "right"],
     },
-}
+    effect=ToolEffect.READ_ONLY,
+)
 
 
 class MathHandler(MethodToolHandler):
