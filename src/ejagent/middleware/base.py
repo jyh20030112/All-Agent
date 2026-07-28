@@ -37,12 +37,6 @@ class Middleware:
         self.name = name or type(self).__name__
         self.enabled = enabled
 
-    def configure_tools(
-        self,
-        tool_definitions: Sequence[ToolDefinition],
-    ) -> None:
-        """Validate or cache the static tool set before resource startup."""
-
     async def startup(self) -> None:
         """Initialize optional middleware resources."""
 
@@ -55,6 +49,12 @@ class Middleware:
 
 class ToolMiddleware(Middleware):
     """Decorator around one tool execution."""
+
+    def configure_tools(
+        self,
+        tool_definitions: Sequence[ToolDefinition],
+    ) -> None:
+        """Validate or cache the resolved tool set before middleware startup."""
 
     async def __call__(
         self,
