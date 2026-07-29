@@ -14,5 +14,6 @@ my_skills
 
 .pytest_cache
 
+AGENTS.md
 .ejagent-sessions
 .simagentplg-sessions
