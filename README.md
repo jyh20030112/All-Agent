@@ -935,9 +935,6 @@ Shell + Filesystem + Git + Workspace + Approval UI
 + Sandbox + Completion Tool + Product Interface
 ```
 
-See [the Pi Harness comparison](docs/pi-harness-gap-analysis.md) for the
-architecture analysis and future roadmap.
-
 ## Examples
 
 ```bash

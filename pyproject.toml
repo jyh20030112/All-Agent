@@ -38,12 +38,6 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/ejagent"]
 
-[tool.hatch.build.targets.sdist]
-exclude = [
-    "/.gitmodules",
-    "/pi",
-]
-
 [tool.ruff]
 target-version = "py312"
 line-length = 88

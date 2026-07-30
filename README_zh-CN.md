@@ -777,9 +777,6 @@ Shell + Filesystem + Git + Workspace + Approval UI
 + Sandbox + Completion Tool + Product Interface
 ```
 
-架构分析和后续路线参见
-[Pi Harness 对照分析](docs/pi-harness-gap-analysis.md)。
-
 ## 示例
 
 ```bash
