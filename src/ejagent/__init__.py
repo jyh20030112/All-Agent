@@ -1,4 +1,10 @@
-"""Composable stateful agents with tool handlers and MCP integration."""
+"""Composable stateful agents with tool handlers and MCP integration.
+
+.. note::
+
+    This package provides the core agent framework — see :class:`BaseAgent` for
+    the primary entry point.
+"""
 
 from ejagent.agent.base import BaseAgent
 from ejagent.agent.behavior import (
