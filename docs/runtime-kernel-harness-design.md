@@ -18,9 +18,14 @@ Implementation progress:
   compare-and-commit through the new `SessionStore` contract.
 - `MemorySessionStore` provides an idempotent in-process adapter and rejects
   stale revisions and reused Run IDs with different content.
-- ContextView, steering safe points, dedicated follow-up admission, observers,
-  and legacy adapter migration remain pending. The legacy execution path is not
-  yet connected to the new Kernel.
+- Conversation recovery now uses an immutable `ConversationSnapshot`; durable
+  Run facts are read separately as `RunAudit` values.
+- Every model call receives a disposable `ContextView` from a
+  `ContextPipeline`. Identity and derived-compaction implementations preserve
+  committed history while permitting summaries and transient instructions.
+- Steering admission, queued follow-ups, observers, and legacy adapter
+  migration remain pending. The legacy execution path is not yet connected to
+  the new Kernel.
 
 ## Scope
 

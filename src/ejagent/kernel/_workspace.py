@@ -33,6 +33,14 @@ class _RunWorkspace:
         return tuple(self._messages)
 
     @property
+    def committed_messages(self) -> tuple[ConversationMessage, ...]:
+        return self.spec.messages
+
+    @property
+    def pending_messages(self) -> tuple[ConversationMessage, ...]:
+        return tuple(self._delta)
+
+    @property
     def delta(self) -> RunDelta:
         return RunDelta(
             base_revision=self.spec.base_revision,

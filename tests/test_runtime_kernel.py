@@ -206,6 +206,7 @@ class RuntimeKernelTests(unittest.IsolatedAsyncioTestCase):
             [
                 "run_started",
                 "turn_started",
+                "context_built",
                 "model_text_delta",
                 "assistant_message",
                 "turn_completed",

@@ -177,6 +177,11 @@ class AgentHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(harness.last_result, outcome.result)
         self.assertEqual((await store.load("agent-1")), harness.snapshot)
         self.assertEqual(len(await store.commits("agent-1")), 1)
+        audit = await store.load_audit("agent-1")
+        self.assertEqual(len(audit), 1)
+        self.assertTrue(audit[0].committed)
+        self.assertEqual(audit[0].result, outcome.result)
+        self.assertFalse(hasattr(audit[0], "messages"))
         await harness.shutdown()
 
     async def test_failed_run_is_audited_without_advancing_conversation(self) -> None:
@@ -209,6 +214,10 @@ class AgentHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(commits), 1)
         self.assertFalse(commits[0].advances_revision)
         self.assertEqual(commits[0].outcome.failure, outcome.failure)
+        audit = await store.load_audit("agent-failed")
+        self.assertFalse(audit[0].committed)
+        self.assertEqual(audit[0].resulting_revision, 0)
+        self.assertEqual(audit[0].failure, outcome.failure)
 
     async def test_store_failure_cannot_report_success_or_advance_state(self) -> None:
         harness = AgentHarness(

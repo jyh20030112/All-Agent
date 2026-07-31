@@ -8,7 +8,9 @@ from types import TracebackType
 from typing import Self
 from uuid import uuid4
 
+from ejagent.contracts.context import ContextPipeline
 from ejagent.contracts.control import CancellationSource
+from ejagent.contracts.conversation import ConversationSnapshot
 from ejagent.contracts.json import JsonValue
 from ejagent.contracts.lifecycle import ManagedResource
 from ejagent.contracts.messages import ConversationMessage
@@ -72,6 +74,7 @@ class AgentHarness:
         agent_id: str,
         model: ModelPort,
         tools: ToolExecutor,
+        context: ContextPipeline | None = None,
         initial_messages: Iterable[ConversationMessage] = (),
         store: SessionStore | None = None,
         resources: Iterable[object] = (),
@@ -98,20 +101,26 @@ class AgentHarness:
 
         initial = SessionSnapshot(
             agent_id=agent_id,
-            messages=tuple(initial_messages),
+            conversation=ConversationSnapshot(messages=tuple(initial_messages)),
         )
         self._agent_id = agent_id
         self._model = model
         self._tools = tools
+        self._context = context
         self._store = store if store is not None else MemorySessionStore()
         self._snapshot = initial
         self._limits = limits or RunLimits()
         self._configuration_revision = configuration_revision
         self._run_id_factory = run_id_factory or (lambda: str(uuid4()))
         self._clock = clock or _utc_now
-        self._kernel = RuntimeKernel(model=model, tools=tools, clock=self._clock)
+        self._kernel = RuntimeKernel(
+            model=model,
+            tools=tools,
+            context=context,
+            clock=self._clock,
+        )
         self._resources = self._managed_resources(
-            (self._store, self._model, self._tools, *resources)
+            (self._store, self._model, self._tools, self._context, *resources)
         )
         self._started_resources: tuple[ManagedResource, ...] = ()
         self._status = HarnessStatus.NEW
@@ -293,8 +302,7 @@ class AgentHarness:
     ) -> RunOutcome:
         commit = SessionCommit(
             agent_id=self._agent_id,
-            base_revision=base.revision,
-            base_messages=base.messages,
+            base=base.conversation,
             outcome=outcome,
         )
         try:
@@ -369,7 +377,7 @@ class AgentHarness:
         if (
             snapshot.agent_id != self._agent_id
             or snapshot.revision != commit.resulting_revision
-            or snapshot.messages != commit.resulting_messages
+            or snapshot.conversation != commit.resulting_conversation
             or snapshot.last_result != expected_result
         ):
             raise SessionStoreProtocolError(

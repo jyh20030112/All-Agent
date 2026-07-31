@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
-from ejagent.contracts.messages import ConversationMessage, is_conversation_message
+from ejagent.contracts.audit import RunAudit
+from ejagent.contracts.conversation import ConversationSnapshot
+from ejagent.contracts.messages import ConversationMessage
 from ejagent.contracts.runs import RunOutcome, RunResult, RunStatus
 
 
@@ -12,30 +14,28 @@ def _required_id(value: object, field_name: str) -> None:
         raise ValueError(f"{field_name} must not be empty")
 
 
-def _revision(value: object, field_name: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"{field_name} must be an integer")
-    if value < 0:
-        raise ValueError(f"{field_name} must not be negative")
-
-
 @dataclass(frozen=True, slots=True)
 class SessionSnapshot:
-    """Immutable committed Conversation state loaded by an AgentHarness."""
+    """Harness recovery state with Conversation kept as its own data domain."""
 
     agent_id: str
-    revision: int = 0
-    messages: tuple[ConversationMessage, ...] = ()
+    conversation: ConversationSnapshot = field(default_factory=ConversationSnapshot)
     last_result: RunResult | None = None
 
     def __post_init__(self) -> None:
         _required_id(self.agent_id, "snapshot agent_id")
-        _revision(self.revision, "snapshot revision")
-        object.__setattr__(self, "messages", tuple(self.messages))
-        if not all(is_conversation_message(message) for message in self.messages):
-            raise TypeError("snapshot messages must contain ConversationMessage values")
+        if not isinstance(self.conversation, ConversationSnapshot):
+            raise TypeError("snapshot conversation must be a ConversationSnapshot")
         if self.last_result is not None and not isinstance(self.last_result, RunResult):
             raise TypeError("snapshot last_result must be a RunResult or None")
+
+    @property
+    def revision(self) -> int:
+        return self.conversation.revision
+
+    @property
+    def messages(self) -> tuple[ConversationMessage, ...]:
+        return self.conversation.messages
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,22 +43,25 @@ class SessionCommit:
     """One idempotent Run record proposed against a committed revision."""
 
     agent_id: str
-    base_revision: int
-    base_messages: tuple[ConversationMessage, ...]
+    base: ConversationSnapshot
     outcome: RunOutcome
 
     def __post_init__(self) -> None:
         _required_id(self.agent_id, "commit agent_id")
-        _revision(self.base_revision, "commit base_revision")
-        object.__setattr__(self, "base_messages", tuple(self.base_messages))
-        if not all(is_conversation_message(message) for message in self.base_messages):
-            raise TypeError(
-                "commit base_messages must contain ConversationMessage values"
-            )
+        if not isinstance(self.base, ConversationSnapshot):
+            raise TypeError("commit base must be a ConversationSnapshot")
         if not isinstance(self.outcome, RunOutcome):
             raise TypeError("commit outcome must be a RunOutcome")
         if self.outcome.delta.base_revision != self.base_revision:
             raise ValueError("commit and Delta base revisions must match")
+
+    @property
+    def base_revision(self) -> int:
+        return self.base.revision
+
+    @property
+    def base_messages(self) -> tuple[ConversationMessage, ...]:
+        return self.base.messages
 
     @property
     def run_id(self) -> str:
@@ -75,10 +78,24 @@ class SessionCommit:
         return self.base_revision + int(self.advances_revision)
 
     @property
-    def resulting_messages(self) -> tuple[ConversationMessage, ...]:
+    def resulting_conversation(self) -> ConversationSnapshot:
         if not self.advances_revision:
-            return self.base_messages
-        return (*self.base_messages, *self.outcome.delta.messages)
+            return self.base
+        return ConversationSnapshot(
+            revision=self.resulting_revision,
+            messages=(*self.base.messages, *self.outcome.delta.messages),
+        )
+
+    @property
+    def audit(self) -> RunAudit:
+        return RunAudit(
+            result=self.outcome.result,
+            base_revision=self.base_revision,
+            resulting_revision=self.resulting_revision,
+            committed=self.advances_revision,
+            records=self.outcome.audit_records,
+            failure=self.outcome.failure,
+        )
 
 
 class SessionStoreError(RuntimeError):

@@ -129,10 +129,22 @@ class ContextSummary:
         _required_text(self.compactor_id, "summary compactor_id")
 
 
+@dataclass(frozen=True, slots=True)
+class TransientInstruction:
+    """Run-local instruction projected into context but never Conversation."""
+
+    content: str
+    source: str
+
+    def __post_init__(self) -> None:
+        _required_text(self.content, "transient instruction content")
+        _required_text(self.source, "transient instruction source")
+
+
 ConversationMessage: TypeAlias = (
     SystemMessage | UserMessage | AssistantMessage | ToolResultMessage
 )
-ContextMessage: TypeAlias = ConversationMessage | ContextSummary
+ContextMessage: TypeAlias = ConversationMessage | ContextSummary | TransientInstruction
 
 
 def is_conversation_message(value: object) -> TypeGuard[ConversationMessage]:
@@ -147,4 +159,6 @@ def is_conversation_message(value: object) -> TypeGuard[ConversationMessage]:
 def is_context_message(value: object) -> TypeGuard[ContextMessage]:
     """Return whether a value belongs to the closed Context union."""
 
-    return is_conversation_message(value) or isinstance(value, ContextSummary)
+    return is_conversation_message(value) or isinstance(
+        value, (ContextSummary, TransientInstruction)
+    )

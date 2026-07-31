@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+from ejagent.contracts.audit import AuditReader, RunAudit
 from ejagent.contracts.session import (
     SessionCommit,
     SessionConflictError,
@@ -10,7 +11,7 @@ from ejagent.contracts.session import (
 )
 
 
-class MemorySessionStore(SessionStore):
+class MemorySessionStore(SessionStore, AuditReader):
     """Process-local atomic SessionStore with idempotent Run commits."""
 
     def __init__(self) -> None:
@@ -45,7 +46,7 @@ class MemorySessionStore(SessionStore):
                     )
                 current = SessionSnapshot(
                     agent_id=commit.agent_id,
-                    messages=commit.base_messages,
+                    conversation=commit.base,
                 )
 
             if current.revision != commit.base_revision:
@@ -61,8 +62,7 @@ class MemorySessionStore(SessionStore):
 
             snapshot = SessionSnapshot(
                 agent_id=commit.agent_id,
-                revision=commit.resulting_revision,
-                messages=commit.resulting_messages,
+                conversation=commit.resulting_conversation,
                 last_result=(
                     commit.outcome.result
                     if commit.advances_revision
@@ -73,6 +73,15 @@ class MemorySessionStore(SessionStore):
             self._commits[key] = (commit, snapshot)
             self._order.setdefault(commit.agent_id, []).append(commit.run_id)
             return snapshot
+
+    async def load_audit(self, agent_id: str) -> tuple[RunAudit, ...]:
+        """Return Run audit facts without exposing Conversation deltas."""
+
+        async with self._lock:
+            return tuple(
+                self._commits[(agent_id, run_id)][0].audit
+                for run_id in self._order.get(agent_id, ())
+            )
 
     async def commits(self, agent_id: str) -> tuple[SessionCommit, ...]:
         """Return recorded commits in insertion order for inspection."""

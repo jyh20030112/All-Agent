@@ -8,6 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = PROJECT_ROOT / "src" / "ejagent"
 LOW_LEVEL_PACKAGES = (
     SOURCE_ROOT / "contracts",
+    SOURCE_ROOT / "context",
     SOURCE_ROOT / "kernel",
     SOURCE_ROOT / "harness",
 )

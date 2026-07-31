@@ -11,6 +11,7 @@ from ejagent.contracts import (
     AssistantMessage,
     AuditRecord,
     ContextSummary,
+    ConversationSnapshot,
     FailureCode,
     RunDelta,
     RunFailure,
@@ -22,12 +23,16 @@ from ejagent.contracts import (
     RunSpec,
     RunStatus,
     RunUsage,
+    SessionCommit,
     StopReason,
     ToolCall,
     ToolControl,
     ToolEffect,
     ToolResultMessage,
+    TransientInstruction,
     UserMessage,
+    is_context_message,
+    is_conversation_message,
     thaw_json_value,
 )
 
@@ -84,6 +89,48 @@ class MessageContractTests(unittest.TestCase):
         )
 
         self.assertEqual(summary.source_revision_end, 4)
+        self.assertTrue(is_context_message(summary))
+        self.assertFalse(is_conversation_message(summary))
+
+    def test_transient_instruction_cannot_enter_conversation(self) -> None:
+        instruction = TransientInstruction("focus on safety", "steering")
+
+        self.assertTrue(is_context_message(instruction))
+        self.assertFalse(is_conversation_message(instruction))
+
+
+class DataDomainContractTests(unittest.TestCase):
+    def test_commit_produces_separate_conversation_and_audit_values(self) -> None:
+        base = ConversationSnapshot(
+            revision=2,
+            messages=(UserMessage("existing"),),
+        )
+        result = RunResult(
+            run_id="run-3",
+            status=RunStatus.COMPLETED,
+            stop_reason=StopReason.TEXT_RESPONSE,
+            turns=1,
+            output="done",
+        )
+        outcome = RunOutcome(
+            result=result,
+            delta=RunDelta(
+                base_revision=2,
+                messages=(AssistantMessage(content="done"),),
+            ),
+        )
+
+        commit = SessionCommit(agent_id="agent", base=base, outcome=outcome)
+
+        self.assertEqual(commit.resulting_conversation.revision, 3)
+        self.assertEqual(
+            commit.resulting_conversation.messages,
+            (UserMessage("existing"), AssistantMessage(content="done")),
+        )
+        self.assertEqual(base.messages, (UserMessage("existing"),))
+        self.assertEqual(commit.audit.run_id, "run-3")
+        self.assertTrue(commit.audit.committed)
+        self.assertFalse(hasattr(commit.audit, "messages"))
 
 
 class RunContractTests(unittest.TestCase):

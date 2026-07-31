@@ -4,6 +4,14 @@ from collections.abc import Callable, Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
 
+from ejagent.context import IdentityContextPipeline
+from ejagent.contracts.context import (
+    ContextBuildError,
+    ContextPipeline,
+    ContextProtocolError,
+    ContextRequest,
+    ContextView,
+)
 from ejagent.contracts.control import (
     CancellationSource,
     CancellationToken,
@@ -141,10 +149,12 @@ class RuntimeKernel:
         *,
         model: ModelPort,
         tools: ToolExecutor,
+        context: ContextPipeline | None = None,
         clock: Clock | None = None,
     ) -> None:
         self._model = model
         self._tools = tools
+        self._context = context if context is not None else IdentityContextPipeline()
         self._clock = clock or _utc_now
 
     async def run(
@@ -187,10 +197,24 @@ class RuntimeKernel:
 
                 turn = workspace.advance_turn()
                 audit.append("turn_started", {"turn": turn})
+                context = await self._build_context(
+                    workspace,
+                    cancellation=token,
+                    turn=turn,
+                )
+                audit.append(
+                    "context_built",
+                    {
+                        "turn": turn,
+                        "source_revision": context.source_revision,
+                        "message_count": len(context.messages),
+                        "metadata": context.metadata,
+                    },
+                )
                 usage.begin_request()
                 completed = await self._request_model(
                     ModelRequest(
-                        messages=workspace.messages,
+                        messages=context.messages,
                         tools=definitions,
                     ),
                     cancellation=token,
@@ -282,6 +306,20 @@ class RuntimeKernel:
                 stop_reason=StopReason.EXTERNAL_ABORT,
                 output=str(exc),
             )
+        except ContextBuildError as exc:
+            return self._failed(
+                workspace,
+                usage,
+                audit,
+                stop_reason=self._context_stop_reason(exc.code),
+                failure=RunFailure(
+                    phase=RunPhase.CONTEXT,
+                    code=exc.code,
+                    message=str(exc),
+                    retryable=exc.retryable,
+                    cause=exc,
+                ),
+            )
         except ModelCallError as exc:
             return self._failed(
                 workspace,
@@ -310,6 +348,45 @@ class RuntimeKernel:
                     cause=exc,
                 ),
             )
+
+    async def _build_context(
+        self,
+        workspace: _RunWorkspace,
+        *,
+        cancellation: CancellationToken,
+        turn: int,
+    ) -> ContextView:
+        request = ContextRequest(
+            run_id=workspace.spec.run_id,
+            source_revision=workspace.spec.base_revision,
+            turn=turn,
+            committed_messages=workspace.committed_messages,
+            pending_messages=workspace.pending_messages,
+            metadata=workspace.spec.metadata,
+        )
+        try:
+            view = await cancellation.run(
+                self._context.build(request, cancellation=cancellation)
+            )
+        except (RunCancelledError, ContextBuildError, ContextProtocolError):
+            raise
+        except Exception as exc:
+            raise ContextProtocolError(
+                f"ContextPipeline raised an undeclared {type(exc).__name__}"
+            ) from exc
+        if not isinstance(view, ContextView):
+            raise ContextProtocolError(
+                "ContextPipeline.build() must return ContextView"
+            )
+        if (
+            view.run_id != request.run_id
+            or view.source_revision != request.source_revision
+            or view.turn != request.turn
+        ):
+            raise ContextProtocolError(
+                "ContextView identity does not match its ContextRequest"
+            )
+        return view
 
     def _snapshot_tool_definitions(self) -> tuple[ToolDefinition, ...]:
         definitions = tuple(self._tools.definitions)
@@ -549,6 +626,12 @@ class RuntimeKernel:
         if code is FailureCode.COMPACTION_FAILED:
             return StopReason.COMPACTION_FAILED
         return StopReason.RUNTIME_ERROR
+
+    @staticmethod
+    def _context_stop_reason(code: FailureCode) -> StopReason:
+        if code is FailureCode.CONTEXT_OVERFLOW:
+            return StopReason.CONTEXT_OVERFLOW
+        return StopReason.COMPACTION_FAILED
 
     @staticmethod
     def _assistant_payload(message: AssistantMessage, turn: int) -> JsonObject:

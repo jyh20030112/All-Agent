@@ -1,10 +1,23 @@
 """Stable, implementation-independent EJAgent Core contracts."""
 
+from ejagent.contracts.audit import AuditReader, RunAudit
+from ejagent.contracts.context import (
+    ContextBuildError,
+    ContextCompactionOutput,
+    ContextCompactionRequest,
+    ContextCompactor,
+    ContextCompactorError,
+    ContextPipeline,
+    ContextProtocolError,
+    ContextRequest,
+    ContextView,
+)
 from ejagent.contracts.control import (
     CancellationSource,
     CancellationToken,
     RunCancelledError,
 )
+from ejagent.contracts.conversation import ConversationSnapshot
 from ejagent.contracts.json import (
     JsonObject,
     JsonScalar,
@@ -23,6 +36,7 @@ from ejagent.contracts.messages import (
     SystemMessage,
     ToolCall,
     ToolResultMessage,
+    TransientInstruction,
     UserMessage,
     is_context_message,
     is_conversation_message,
@@ -73,12 +87,23 @@ from ejagent.contracts.usage import RunUsage
 
 __all__ = [
     "AssistantMessage",
+    "AuditReader",
     "AuditRecord",
     "CancellationSource",
     "CancellationToken",
     "ContextMessage",
+    "ContextBuildError",
+    "ContextCompactionOutput",
+    "ContextCompactionRequest",
+    "ContextCompactor",
+    "ContextCompactorError",
+    "ContextPipeline",
+    "ContextProtocolError",
+    "ContextRequest",
     "ContextSummary",
+    "ContextView",
     "ConversationMessage",
+    "ConversationSnapshot",
     "FailureCode",
     "JsonObject",
     "JsonScalar",
@@ -95,6 +120,7 @@ __all__ = [
     "ModelThinkingDelta",
     "ModelUsage",
     "RunDelta",
+    "RunAudit",
     "RunFailure",
     "RunIntent",
     "RunLimits",
@@ -122,6 +148,7 @@ __all__ = [
     "ToolProtocolError",
     "ToolResultMessage",
     "ToolSemantics",
+    "TransientInstruction",
     "UserMessage",
     "freeze_json_object",
     "freeze_json_value",
