@@ -9,6 +9,7 @@ SOURCE_ROOT = PROJECT_ROOT / "src" / "ejagent"
 LOW_LEVEL_PACKAGES = (
     SOURCE_ROOT / "contracts",
     SOURCE_ROOT / "kernel",
+    SOURCE_ROOT / "harness",
 )
 FORBIDDEN_IMPORTS = (
     "ejagent.agent",
@@ -21,7 +22,7 @@ FORBIDDEN_IMPORTS = (
 
 
 class ArchitectureBoundaryTests(unittest.TestCase):
-    def test_contracts_and_kernel_do_not_import_legacy_layers(self) -> None:
+    def test_new_core_does_not_import_legacy_layers(self) -> None:
         violations: list[str] = []
 
         for package in LOW_LEVEL_PACKAGES:

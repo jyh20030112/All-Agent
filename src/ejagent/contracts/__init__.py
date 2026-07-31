@@ -14,6 +14,7 @@ from ejagent.contracts.json import (
     freeze_json_value,
     thaw_json_value,
 )
+from ejagent.contracts.lifecycle import ManagedResource
 from ejagent.contracts.messages import (
     AssistantMessage,
     ContextMessage,
@@ -51,6 +52,13 @@ from ejagent.contracts.runs import (
     RunStatus,
     StopReason,
 )
+from ejagent.contracts.session import (
+    SessionCommit,
+    SessionConflictError,
+    SessionSnapshot,
+    SessionStore,
+    SessionStoreError,
+)
 from ejagent.contracts.tools import (
     ToolControl,
     ToolDefinition,
@@ -75,6 +83,7 @@ __all__ = [
     "JsonObject",
     "JsonScalar",
     "JsonValue",
+    "ManagedResource",
     "MutableJsonValue",
     "ModelCallError",
     "ModelPort",
@@ -96,6 +105,11 @@ __all__ = [
     "RunStatus",
     "RunUsage",
     "RunCancelledError",
+    "SessionCommit",
+    "SessionConflictError",
+    "SessionSnapshot",
+    "SessionStore",
+    "SessionStoreError",
     "StopReason",
     "SystemMessage",
     "ToolCall",

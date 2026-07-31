@@ -13,9 +13,14 @@ Implementation progress:
   implemented in `ejagent.contracts`.
 - `ejagent.kernel.RuntimeKernel` executes one Run over a private workspace and
   returns a deterministic Delta plus Audit records.
-- AgentHarness, durable commit coordination, ContextView, and legacy adapter
-  migration remain pending. The legacy execution path is not yet connected to
-  the new Kernel.
+- `ejagent.harness.AgentHarness` owns single-agent resource lifecycle,
+  cancellation, FIFO Run admission, snapshot recovery, and atomic
+  compare-and-commit through the new `SessionStore` contract.
+- `MemorySessionStore` provides an idempotent in-process adapter and rejects
+  stale revisions and reused Run IDs with different content.
+- ContextView, steering safe points, dedicated follow-up admission, observers,
+  and legacy adapter migration remain pending. The legacy execution path is not
+  yet connected to the new Kernel.
 
 ## Scope
 
