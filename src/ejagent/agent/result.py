@@ -1,38 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import StrEnum
 
-from ejagent.agent.usage import RunUsage
-
-
-class RunStatus(StrEnum):
-    """Terminal status of one orchestrator run."""
-
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-    REJECTED = "rejected"
-
-
-class StopReason(StrEnum):
-    """Reason why an orchestrator run stopped."""
-
-    TEXT_RESPONSE = "text_response"
-    TOOL_COMPLETION = "tool_completion"
-    TOOL_REJECTED = "tool_rejected"
-    TOOL_CANCELLED = "tool_cancelled"
-    BEHAVIOR_STOP = "behavior_stop"
-    EXTERNAL_ABORT = "external_abort"
-    EMPTY_RESPONSE = "empty_response"
-    MAX_STEPS = "max_steps"
-    MAX_NO_TOOL_RESPONSES = "max_no_tool_responses"
-    REPEATED_TOOL_CALL = "repeated_tool_call"
-    TOKEN_BUDGET_EXCEEDED = "token_budget_exceeded"
-    USAGE_UNAVAILABLE = "usage_unavailable"
-    CONTEXT_OVERFLOW = "context_overflow"
-    COMPACTION_FAILED = "compaction_failed"
-    RUNTIME_ERROR = "runtime_error"
+from ejagent.contracts.runs import RunStatus, StopReason
+from ejagent.contracts.usage import RunUsage
 
 
 @dataclass(frozen=True, slots=True)
