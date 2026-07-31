@@ -123,7 +123,12 @@ class DerivedCompactionPipeline(ContextPipeline):
             run_id=request.run_id,
             source_revision=request.source_revision,
             turn=request.turn,
-            messages=(*stable_instructions, summary, *request.pending_messages),
+            messages=(
+                *stable_instructions,
+                summary,
+                *request.pending_messages,
+                *request.transient_instructions,
+            ),
             metadata={
                 **request.metadata,
                 "projection": "derived_compaction",

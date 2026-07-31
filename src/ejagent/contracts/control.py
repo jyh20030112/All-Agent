@@ -3,9 +3,74 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Awaitable
-from typing import TypeVar
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Protocol, TypeVar
 
 T = TypeVar("T")
+
+
+class ControlKind(StrEnum):
+    """Kind of input admitted by an AgentHarness control queue."""
+
+    STEERING = "steering"
+    FOLLOW_UP = "follow_up"
+
+
+class ControlStatus(StrEnum):
+    """Immediate admission decision for one control input."""
+
+    ACCEPTED = "accepted"
+    NOT_RUNNING = "not_running"
+    TOO_LATE = "too_late"
+    QUEUE_FULL = "queue_full"
+    CLOSED = "closed"
+
+
+@dataclass(frozen=True, slots=True)
+class ControlReceipt:
+    """Stable immediate result of one control admission attempt."""
+
+    input_id: str
+    kind: ControlKind
+    status: ControlStatus
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.input_id, str) or not self.input_id.strip():
+            raise ValueError("control input_id must not be empty")
+        if not isinstance(self.kind, ControlKind):
+            raise TypeError("control kind must be a ControlKind")
+        if not isinstance(self.status, ControlStatus):
+            raise TypeError("control status must be a ControlStatus")
+
+    @property
+    def accepted(self) -> bool:
+        return self.status is ControlStatus.ACCEPTED
+
+
+@dataclass(frozen=True, slots=True)
+class SteeringInput:
+    """One admitted transient instruction awaiting a model-call safe point."""
+
+    input_id: str
+    content: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.input_id, str) or not self.input_id.strip():
+            raise ValueError("steering input_id must not be empty")
+        if not isinstance(self.content, str) or not self.content.strip():
+            raise ValueError("steering content must not be empty")
+
+
+class RunControlSource(Protocol):
+    """Run-local control source consumed only at Kernel safe points."""
+
+    def drain_steering(self) -> tuple[SteeringInput, ...]:
+        """Return admitted steering in FIFO order exactly once."""
+
+
+class ControlProtocolError(RuntimeError):
+    """A RunControlSource violated the stable Kernel control protocol."""
 
 
 class RunCancelledError(RuntimeError):

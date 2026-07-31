@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -8,13 +9,21 @@ from types import TracebackType
 from typing import Self
 from uuid import uuid4
 
+from ejagent.contracts.audit import RunAudit
 from ejagent.contracts.context import ContextPipeline
-from ejagent.contracts.control import CancellationSource
+from ejagent.contracts.control import (
+    CancellationSource,
+    ControlKind,
+    ControlReceipt,
+    ControlStatus,
+    SteeringInput,
+)
 from ejagent.contracts.conversation import ConversationSnapshot
 from ejagent.contracts.json import JsonValue
 from ejagent.contracts.lifecycle import ManagedResource
 from ejagent.contracts.messages import ConversationMessage
 from ejagent.contracts.model import ModelPort
+from ejagent.contracts.observer import RunObserver
 from ejagent.contracts.runs import (
     AuditRecord,
     FailureCode,
@@ -35,6 +44,12 @@ from ejagent.contracts.session import (
     SessionStoreError,
 )
 from ejagent.contracts.tools import ToolExecutor
+from ejagent.harness._control import (
+    FollowUpDiscardedError,
+    FollowUpHandle,
+    _QueuedFollowUp,
+    _RunControls,
+)
 from ejagent.harness._memory import MemorySessionStore
 from ejagent.kernel import RuntimeKernel
 
@@ -77,11 +92,14 @@ class AgentHarness:
         context: ContextPipeline | None = None,
         initial_messages: Iterable[ConversationMessage] = (),
         store: SessionStore | None = None,
+        observers: Iterable[RunObserver] = (),
         resources: Iterable[object] = (),
         limits: RunLimits | None = None,
         configuration_revision: str = "default",
         run_id_factory: RunIdFactory | None = None,
         clock: Clock | None = None,
+        steering_capacity: int = 16,
+        follow_up_capacity: int = 16,
     ) -> None:
         if not isinstance(agent_id, str):
             raise TypeError("agent_id must be a string")
@@ -98,6 +116,8 @@ class AgentHarness:
             raise TypeError("run_id_factory must be callable or None")
         if clock is not None and not callable(clock):
             raise TypeError("clock must be callable or None")
+        self._validate_capacity(steering_capacity, "steering_capacity")
+        self._validate_capacity(follow_up_capacity, "follow_up_capacity")
 
         initial = SessionSnapshot(
             agent_id=agent_id,
@@ -107,12 +127,15 @@ class AgentHarness:
         self._model = model
         self._tools = tools
         self._context = context
+        self._observers = tuple(observers)
         self._store = store if store is not None else MemorySessionStore()
         self._snapshot = initial
         self._limits = limits or RunLimits()
         self._configuration_revision = configuration_revision
         self._run_id_factory = run_id_factory or (lambda: str(uuid4()))
         self._clock = clock or _utc_now
+        self._steering_capacity = steering_capacity
+        self._follow_up_capacity = follow_up_capacity
         self._kernel = RuntimeKernel(
             model=model,
             tools=tools,
@@ -120,12 +143,24 @@ class AgentHarness:
             clock=self._clock,
         )
         self._resources = self._managed_resources(
-            (self._store, self._model, self._tools, self._context, *resources)
+            (
+                self._store,
+                self._model,
+                self._tools,
+                self._context,
+                *self._observers,
+                *resources,
+            )
         )
         self._started_resources: tuple[ManagedResource, ...] = ()
         self._status = HarnessStatus.NEW
         self._closing = False
         self._active_cancellation: CancellationSource | None = None
+        self._active_controls: _RunControls | None = None
+        self._follow_ups: deque[_QueuedFollowUp] = deque()
+        self._outstanding_follow_ups = 0
+        self._follow_up_worker: asyncio.Task[None] | None = None
+        self._observer_tasks: set[asyncio.Task[None]] = set()
         self._lifecycle_lock = asyncio.Lock()
         self._run_lock = asyncio.Lock()
 
@@ -152,6 +187,10 @@ class AgentHarness:
     @property
     def snapshot(self) -> SessionSnapshot:
         return self._snapshot
+
+    @property
+    def pending_follow_up_count(self) -> int:
+        return self._outstanding_follow_ups
 
     async def __aenter__(self) -> Self:
         await self.start()
@@ -231,6 +270,49 @@ class AgentHarness:
         source = self._active_cancellation
         return source.cancel(reason) if source is not None else False
 
+    def steer(self, content: str) -> ControlReceipt:
+        """Queue one transient instruction for the next model-call safe point."""
+
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("steering content must not be empty")
+        input_id = uuid4().hex
+        if self._closing or self._status is HarnessStatus.CLOSED:
+            status = ControlStatus.CLOSED
+        elif self._status is not HarnessStatus.RUNNING:
+            status = ControlStatus.NOT_RUNNING
+        elif self._active_controls is None or self._active_controls.closed:
+            status = ControlStatus.TOO_LATE
+        elif self._active_controls.offer(
+            SteeringInput(input_id=input_id, content=content.strip())
+        ):
+            status = ControlStatus.ACCEPTED
+        else:
+            status = ControlStatus.QUEUE_FULL
+        return ControlReceipt(input_id, ControlKind.STEERING, status)
+
+    def follow_up(self, task: str) -> FollowUpHandle:
+        """Submit an independent FIFO Run to follow the active Run chain."""
+
+        if not isinstance(task, str) or not task.strip():
+            raise ValueError("follow-up task must not be empty")
+        input_id = uuid4().hex
+        if self._closing or self._status is HarnessStatus.CLOSED:
+            status = ControlStatus.CLOSED
+        elif self._status is not HarnessStatus.RUNNING:
+            status = ControlStatus.NOT_RUNNING
+        elif self._outstanding_follow_ups >= self._follow_up_capacity:
+            status = ControlStatus.QUEUE_FULL
+        else:
+            status = ControlStatus.ACCEPTED
+        receipt = ControlReceipt(input_id, ControlKind.FOLLOW_UP, status)
+        handle = FollowUpHandle(receipt)
+        if receipt.accepted:
+            self._follow_ups.append(_QueuedFollowUp(task.strip(), handle))
+            self._outstanding_follow_ups += 1
+            if self._follow_up_worker is None:
+                self._follow_up_worker = asyncio.create_task(self._run_follow_ups())
+        return handle
+
     async def shutdown(self) -> None:
         """Stop accepting Runs, cancel active work, and release resources."""
 
@@ -239,9 +321,11 @@ class AgentHarness:
                 return
             self._closing = True
             self._status = HarnessStatus.STOPPING
+            self._discard_pending_follow_ups("AgentHarness is shutting down")
             self.cancel("AgentHarness is shutting down")
 
             async with self._run_lock:
+                await self._flush_observers()
                 failures: list[BaseException] = []
                 for resource in reversed(self._started_resources):
                     try:
@@ -250,6 +334,10 @@ class AgentHarness:
                         failures.append(exc)
                 self._started_resources = ()
                 self._status = HarnessStatus.CLOSED
+
+            worker = self._follow_up_worker
+            if worker is not None and worker is not asyncio.current_task():
+                await asyncio.gather(worker, return_exceptions=True)
 
             if failures:
                 raise BaseExceptionGroup(
@@ -282,18 +370,126 @@ class AgentHarness:
                 metadata=metadata or {},
             )
             cancellation = CancellationSource()
+            controls = _RunControls(self._steering_capacity)
             self._active_cancellation = cancellation
+            self._active_controls = controls
             self._status = HarnessStatus.RUNNING
             try:
                 outcome = await self._kernel.run(
                     spec,
                     cancellation=cancellation.token,
+                    controls=controls,
                 )
-                return await self._commit(base, outcome)
+                discarded = controls.close()
+                self._active_controls = None
+                outcome = self._append_discarded_steering(outcome, discarded)
+                outcome = await self._commit(base, outcome)
+                self._dispatch_observers(base, outcome)
+                return outcome
             finally:
+                controls.close()
                 self._active_cancellation = None
+                if self._active_controls is controls:
+                    self._active_controls = None
                 if not self._closing:
                     self._status = HarnessStatus.READY
+
+    async def _run_follow_ups(self) -> None:
+        try:
+            while self._follow_ups:
+                queued = self._follow_ups.popleft()
+                try:
+                    if self._closing:
+                        queued.handle._fail(
+                            FollowUpDiscardedError("AgentHarness is shutting down")
+                        )
+                        continue
+                    try:
+                        outcome = await self._execute(
+                            intent=RunIntent.TASK,
+                            task=queued.task,
+                            limits=None,
+                            metadata={
+                                "control_input_id": queued.handle.receipt.input_id
+                            },
+                        )
+                    except HarnessClosedError:
+                        queued.handle._fail(
+                            FollowUpDiscardedError("AgentHarness is shutting down")
+                        )
+                    except BaseException as exc:
+                        queued.handle._fail(exc)
+                    else:
+                        queued.handle._resolve(outcome)
+                finally:
+                    self._outstanding_follow_ups -= 1
+        finally:
+            self._follow_up_worker = None
+
+    def _append_discarded_steering(
+        self,
+        outcome: RunOutcome,
+        discarded: tuple[SteeringInput, ...],
+    ) -> RunOutcome:
+        if not discarded:
+            return outcome
+        records = list(outcome.audit_records)
+        for item in discarded:
+            records.append(
+                AuditRecord(
+                    run_id=outcome.result.run_id,
+                    sequence=len(records) + 1,
+                    kind="steering_discarded",
+                    occurred_at=self._clock(),
+                    payload={
+                        "input_id": item.input_id,
+                        "content": item.content,
+                        "reason": "run_finished",
+                    },
+                )
+            )
+        return RunOutcome(
+            result=outcome.result,
+            delta=outcome.delta,
+            audit_records=tuple(records),
+            failure=outcome.failure,
+        )
+
+    def _dispatch_observers(
+        self,
+        base: SessionSnapshot,
+        outcome: RunOutcome,
+    ) -> None:
+        if not self._observers:
+            return
+        audit = SessionCommit(
+            agent_id=self._agent_id,
+            base=base.conversation,
+            outcome=outcome,
+        ).audit
+        for observer in self._observers:
+            task = asyncio.create_task(self._notify_observer(observer, audit))
+            self._observer_tasks.add(task)
+            task.add_done_callback(self._observer_done)
+
+    def _observer_done(self, task: asyncio.Task[None]) -> None:
+        self._observer_tasks.discard(task)
+        if not task.cancelled():
+            task.exception()
+
+    async def _flush_observers(self) -> None:
+        if self._observer_tasks:
+            await asyncio.gather(*tuple(self._observer_tasks), return_exceptions=True)
+
+    @staticmethod
+    async def _notify_observer(observer: RunObserver, audit: RunAudit) -> None:
+        await observer.observe(audit)
+
+    def _discard_pending_follow_ups(self, reason: str) -> None:
+        while self._follow_ups:
+            queued = self._follow_ups.popleft()
+            queued.handle._fail(FollowUpDiscardedError(reason))
+            self._outstanding_follow_ups -= 1
 
     async def _commit(
         self,
@@ -406,3 +602,10 @@ class AgentHarness:
             if isinstance(resource, ManagedResource):
                 managed.append(resource)
         return tuple(managed)
+
+    @staticmethod
+    def _validate_capacity(value: object, field_name: str) -> None:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{field_name} must be an integer")
+        if value <= 0:
+            raise ValueError(f"{field_name} must be greater than zero")

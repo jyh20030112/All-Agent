@@ -23,9 +23,14 @@ Implementation progress:
 - Every model call receives a disposable `ContextView` from a
   `ContextPipeline`. Identity and derived-compaction implementations preserve
   committed history while permitting summaries and transient instructions.
-- Steering admission, queued follow-ups, observers, and legacy adapter
-  migration remain pending. The legacy execution path is not yet connected to
-  the new Kernel.
+- Steering is admitted by the Harness and consumed by the Kernel only at model
+  call safe points; unapplied inputs remain auditable without entering
+  Conversation.
+- Follow-ups run as independent FIFO Runs. `RunObserver` delivery happens
+  asynchronously after the Store decision, so observer latency and failure
+  cannot alter execution or commit semantics.
+- Durable legacy adapters and Session migration remain pending. The legacy
+  execution path is not yet connected to the new Kernel.
 
 ## Scope
 

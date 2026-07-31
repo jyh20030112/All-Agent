@@ -15,14 +15,21 @@ from ejagent.contracts.context import (
 from ejagent.contracts.control import (
     CancellationSource,
     CancellationToken,
+    ControlProtocolError,
     RunCancelledError,
+    RunControlSource,
+    SteeringInput,
 )
 from ejagent.contracts.json import (
     JsonObject,
     JsonValue,
     freeze_json_object,
 )
-from ejagent.contracts.messages import AssistantMessage, ToolCall
+from ejagent.contracts.messages import (
+    AssistantMessage,
+    ToolCall,
+    TransientInstruction,
+)
 from ejagent.contracts.model import (
     ModelCallError,
     ModelPort,
@@ -162,6 +169,7 @@ class RuntimeKernel:
         spec: RunSpec,
         *,
         cancellation: CancellationToken | None = None,
+        controls: RunControlSource | None = None,
     ) -> RunOutcome:
         """Execute one Run without mutating the supplied RunSpec or Harness state."""
 
@@ -197,10 +205,24 @@ class RuntimeKernel:
 
                 turn = workspace.advance_turn()
                 audit.append("turn_started", {"turn": turn})
+                steering = self._drain_steering(controls)
+                for item in steering:
+                    audit.append(
+                        "steering_applied",
+                        {
+                            "turn": turn,
+                            "input_id": item.input_id,
+                            "content": item.content,
+                        },
+                    )
                 context = await self._build_context(
                     workspace,
                     cancellation=token,
                     turn=turn,
+                    transient_instructions=tuple(
+                        TransientInstruction(item.content, "steering")
+                        for item in steering
+                    ),
                 )
                 audit.append(
                     "context_built",
@@ -355,6 +377,7 @@ class RuntimeKernel:
         *,
         cancellation: CancellationToken,
         turn: int,
+        transient_instructions: tuple[TransientInstruction, ...],
     ) -> ContextView:
         request = ContextRequest(
             run_id=workspace.spec.run_id,
@@ -362,6 +385,7 @@ class RuntimeKernel:
             turn=turn,
             committed_messages=workspace.committed_messages,
             pending_messages=workspace.pending_messages,
+            transient_instructions=transient_instructions,
             metadata=workspace.spec.metadata,
         )
         try:
@@ -387,6 +411,22 @@ class RuntimeKernel:
                 "ContextView identity does not match its ContextRequest"
             )
         return view
+
+    @staticmethod
+    def _drain_steering(
+        controls: RunControlSource | None,
+    ) -> tuple[SteeringInput, ...]:
+        if controls is None:
+            return ()
+        items = controls.drain_steering()
+        if not isinstance(items, tuple) or not all(
+            isinstance(item, SteeringInput) for item in items
+        ):
+            raise ControlProtocolError(
+                "RunControlSource.drain_steering() must return "
+                "tuple[SteeringInput, ...]"
+            )
+        return items
 
     def _snapshot_tool_definitions(self) -> tuple[ToolDefinition, ...]:
         definitions = tuple(self._tools.definitions)

@@ -15,7 +15,13 @@ from ejagent.contracts.context import (
 from ejagent.contracts.control import (
     CancellationSource,
     CancellationToken,
+    ControlKind,
+    ControlProtocolError,
+    ControlReceipt,
+    ControlStatus,
     RunCancelledError,
+    RunControlSource,
+    SteeringInput,
 )
 from ejagent.contracts.conversation import ConversationSnapshot
 from ejagent.contracts.json import (
@@ -52,6 +58,7 @@ from ejagent.contracts.model import (
     ModelThinkingDelta,
     ModelUsage,
 )
+from ejagent.contracts.observer import RunObserver
 from ejagent.contracts.runs import (
     AuditRecord,
     FailureCode,
@@ -91,6 +98,10 @@ __all__ = [
     "AuditRecord",
     "CancellationSource",
     "CancellationToken",
+    "ControlKind",
+    "ControlProtocolError",
+    "ControlReceipt",
+    "ControlStatus",
     "ContextMessage",
     "ContextBuildError",
     "ContextCompactionOutput",
@@ -131,12 +142,15 @@ __all__ = [
     "RunStatus",
     "RunUsage",
     "RunCancelledError",
+    "RunControlSource",
+    "RunObserver",
     "SessionCommit",
     "SessionConflictError",
     "SessionSnapshot",
     "SessionStore",
     "SessionStoreError",
     "StopReason",
+    "SteeringInput",
     "SystemMessage",
     "ToolCall",
     "ToolControl",

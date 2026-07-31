@@ -9,6 +9,7 @@ from ejagent.contracts.json import JsonObject, freeze_json_object
 from ejagent.contracts.messages import (
     ContextMessage,
     ConversationMessage,
+    TransientInstruction,
     is_context_message,
     is_conversation_message,
 )
@@ -31,6 +32,7 @@ class ContextRequest:
     turn: int
     committed_messages: tuple[ConversationMessage, ...]
     pending_messages: tuple[ConversationMessage, ...] = ()
+    transient_instructions: tuple[TransientInstruction, ...] = ()
     metadata: JsonObject = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -42,6 +44,11 @@ class ContextRequest:
             raise ValueError("context turn must be greater than zero")
         object.__setattr__(self, "committed_messages", tuple(self.committed_messages))
         object.__setattr__(self, "pending_messages", tuple(self.pending_messages))
+        object.__setattr__(
+            self,
+            "transient_instructions",
+            tuple(self.transient_instructions),
+        )
         if not all(
             is_conversation_message(message) for message in self.committed_messages
         ):
@@ -52,6 +59,13 @@ class ContextRequest:
             is_conversation_message(message) for message in self.pending_messages
         ):
             raise TypeError("pending_messages must contain ConversationMessage values")
+        if not all(
+            isinstance(instruction, TransientInstruction)
+            for instruction in self.transient_instructions
+        ):
+            raise TypeError(
+                "transient_instructions must contain TransientInstruction values"
+            )
         if not isinstance(self.metadata, Mapping):
             raise TypeError("context metadata must be a JSON object")
         object.__setattr__(
@@ -61,8 +75,12 @@ class ContextRequest:
         )
 
     @property
-    def messages(self) -> tuple[ConversationMessage, ...]:
-        return (*self.committed_messages, *self.pending_messages)
+    def messages(self) -> tuple[ContextMessage, ...]:
+        return (
+            *self.committed_messages,
+            *self.pending_messages,
+            *self.transient_instructions,
+        )
 
 
 @dataclass(frozen=True, slots=True)
