@@ -1,5 +1,10 @@
 """Stable, implementation-independent EJAgent Core contracts."""
 
+from ejagent.contracts.control import (
+    CancellationSource,
+    CancellationToken,
+    RunCancelledError,
+)
 from ejagent.contracts.json import (
     JsonObject,
     JsonScalar,
@@ -18,7 +23,19 @@ from ejagent.contracts.messages import (
     ToolCall,
     ToolResultMessage,
     UserMessage,
+    is_context_message,
     is_conversation_message,
+)
+from ejagent.contracts.model import (
+    ModelCallError,
+    ModelPort,
+    ModelProtocolError,
+    ModelRequest,
+    ModelResponseCompleted,
+    ModelStreamEvent,
+    ModelTextDelta,
+    ModelThinkingDelta,
+    ModelUsage,
 )
 from ejagent.contracts.runs import (
     AuditRecord,
@@ -34,11 +51,23 @@ from ejagent.contracts.runs import (
     RunStatus,
     StopReason,
 )
+from ejagent.contracts.tools import (
+    ToolControl,
+    ToolDefinition,
+    ToolEffect,
+    ToolExecutionError,
+    ToolExecutionResult,
+    ToolExecutor,
+    ToolProtocolError,
+    ToolSemantics,
+)
 from ejagent.contracts.usage import RunUsage
 
 __all__ = [
     "AssistantMessage",
     "AuditRecord",
+    "CancellationSource",
+    "CancellationToken",
     "ContextMessage",
     "ContextSummary",
     "ConversationMessage",
@@ -47,6 +76,15 @@ __all__ = [
     "JsonScalar",
     "JsonValue",
     "MutableJsonValue",
+    "ModelCallError",
+    "ModelPort",
+    "ModelProtocolError",
+    "ModelRequest",
+    "ModelResponseCompleted",
+    "ModelStreamEvent",
+    "ModelTextDelta",
+    "ModelThinkingDelta",
+    "ModelUsage",
     "RunDelta",
     "RunFailure",
     "RunIntent",
@@ -57,13 +95,23 @@ __all__ = [
     "RunSpec",
     "RunStatus",
     "RunUsage",
+    "RunCancelledError",
     "StopReason",
     "SystemMessage",
     "ToolCall",
+    "ToolControl",
+    "ToolDefinition",
+    "ToolEffect",
+    "ToolExecutionError",
+    "ToolExecutionResult",
+    "ToolExecutor",
+    "ToolProtocolError",
     "ToolResultMessage",
+    "ToolSemantics",
     "UserMessage",
     "freeze_json_object",
     "freeze_json_value",
+    "is_context_message",
     "is_conversation_message",
     "thaw_json_value",
 ]

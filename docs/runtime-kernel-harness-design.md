@@ -7,6 +7,16 @@ refactor. It is normative for new contracts. Existing `BaseAgent`, dictionary
 messages, and event-driven Session recording remain migration sources, not
 constraints on the target design.
 
+Implementation progress:
+
+- Typed message, Run, Model, Tool, cancellation, usage, and JSON contracts are
+  implemented in `ejagent.contracts`.
+- `ejagent.kernel.RuntimeKernel` executes one Run over a private workspace and
+  returns a deterministic Delta plus Audit records.
+- AgentHarness, durable commit coordination, ContextView, and legacy adapter
+  migration remain pending. The legacy execution path is not yet connected to
+  the new Kernel.
+
 ## Scope
 
 EJAgent Core contains two layers for one logical agent:

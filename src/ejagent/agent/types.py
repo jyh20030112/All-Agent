@@ -1,6 +1,7 @@
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any, Protocol
+
+from ejagent.contracts.tools import ToolControl
 
 AgentMessage = dict[str, Any]
 INTERNAL_METADATA_PREFIX = "_ejagent_"
@@ -15,15 +16,6 @@ def is_internal_metadata_key(key: str) -> bool:
     """Return whether a message key belongs to current or legacy Core metadata."""
 
     return key.startswith(INTERNAL_METADATA_PREFIXES)
-
-
-class ToolControl(StrEnum):
-    """Control signal returned by a tool independently of its payload."""
-
-    CONTINUE = "continue"
-    COMPLETE = "complete"
-    REJECT = "reject"
-    CANCEL = "cancel"
 
 
 @dataclass(frozen=True, slots=True)

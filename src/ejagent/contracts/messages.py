@@ -142,3 +142,9 @@ def is_conversation_message(value: object) -> TypeGuard[ConversationMessage]:
         value,
         (SystemMessage, UserMessage, AssistantMessage, ToolResultMessage),
     )
+
+
+def is_context_message(value: object) -> TypeGuard[ContextMessage]:
+    """Return whether a value belongs to the closed Context union."""
+
+    return is_conversation_message(value) or isinstance(value, ContextSummary)

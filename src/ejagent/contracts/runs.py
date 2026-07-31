@@ -63,6 +63,9 @@ class FailureCode(StrEnum):
     """Provider-neutral category for an expected operational failure."""
 
     PROVIDER_ERROR = "provider_error"
+    RATE_LIMIT = "rate_limit"
+    TIMEOUT = "timeout"
+    AUTHENTICATION = "authentication"
     TOOL_ERROR = "tool_error"
     POLICY_REJECTED = "policy_rejected"
     CANCELLED = "cancelled"

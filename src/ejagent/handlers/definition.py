@@ -5,9 +5,10 @@ import re
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, TypeAlias
+
+from ejagent.contracts.tools import ToolEffect
 
 ToolSchema: TypeAlias = dict[str, Any]
 _TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -29,13 +30,6 @@ def _freeze_json(value: Any) -> Any:
     if isinstance(value, list):
         return tuple(_freeze_json(item) for item in value)
     return value
-
-
-class ToolEffect(StrEnum):
-    """Declared side-effect class used by the Core tool scheduler."""
-
-    READ_ONLY = "read_only"
-    SIDE_EFFECTING = "side_effecting"
 
 
 class ToolDefinitionError(ValueError):
