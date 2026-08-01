@@ -76,9 +76,12 @@ from ejagent.contracts.runs import (
 from ejagent.contracts.session import (
     SessionCommit,
     SessionConflictError,
+    SessionMigrationError,
     SessionSnapshot,
     SessionStore,
     SessionStoreError,
+    SessionStoreLockTimeoutError,
+    SessionStoreSerializationError,
 )
 from ejagent.contracts.tools import (
     ToolControl,
@@ -146,9 +149,12 @@ __all__ = [
     "RunObserver",
     "SessionCommit",
     "SessionConflictError",
+    "SessionMigrationError",
     "SessionSnapshot",
     "SessionStore",
     "SessionStoreError",
+    "SessionStoreLockTimeoutError",
+    "SessionStoreSerializationError",
     "StopReason",
     "SteeringInput",
     "SystemMessage",

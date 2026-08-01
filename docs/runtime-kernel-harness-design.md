@@ -29,8 +29,13 @@ Implementation progress:
 - Follow-ups run as independent FIFO Runs. `RunObserver` delivery happens
   asynchronously after the Store decision, so observer latency and failure
   cannot alter execution or commit semantics.
-- Durable legacy adapters and Session migration remain pending. The legacy
-  execution path is not yet connected to the new Kernel.
+- `JsonlSessionStore` provides locked, append-only durable commits with CAS,
+  idempotent Run IDs, crash-tail recovery, and typed Conversation/Audit codecs.
+  Legacy JSONL Sessions can be imported once or rejected with an actionable
+  `SessionMigrationError`; compacted projections are not treated as source
+  history.
+- Provider, MCP, and Skills adapters remain pending. The legacy execution path
+  is not yet connected to the new Kernel.
 
 ## Scope
 
