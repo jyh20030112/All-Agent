@@ -3,10 +3,6 @@ from __future__ import annotations
 import unittest
 from datetime import UTC, datetime
 
-from ejagent import RunStatus as LegacyRunStatus
-from ejagent import RunUsage as LegacyRunUsage
-from ejagent import ToolControl as LegacyToolControl
-from ejagent import ToolEffect as LegacyToolEffect
 from ejagent.contracts import (
     AssistantMessage,
     AuditRecord,
@@ -22,12 +18,9 @@ from ejagent.contracts import (
     RunResult,
     RunSpec,
     RunStatus,
-    RunUsage,
     SessionCommit,
     StopReason,
     ToolCall,
-    ToolControl,
-    ToolEffect,
     ToolResultMessage,
     TransientInstruction,
     UserMessage,
@@ -232,12 +225,6 @@ class RunContractTests(unittest.TestCase):
                 delta=RunDelta(base_revision=0),
                 audit_records=(later, earlier),
             )
-
-    def test_legacy_paths_reexport_canonical_status_and_usage(self) -> None:
-        self.assertIs(LegacyRunStatus, RunStatus)
-        self.assertIs(LegacyRunUsage, RunUsage)
-        self.assertIs(LegacyToolControl, ToolControl)
-        self.assertIs(LegacyToolEffect, ToolEffect)
 
 
 if __name__ == "__main__":

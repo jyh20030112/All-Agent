@@ -6,11 +6,9 @@ readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.12"
 dependencies = [
-    "jsonschema>=4.26.0",
     "openai>=2.41.0",
     "python-dotenv>=1.2.2",
     "pyyaml>=6.0.3",
-    "referencing>=0.37.0",
 ]
 
 [project.urls]
@@ -27,7 +25,6 @@ mcp = [
 dev = [
     "mypy>=1.18.2",
     "ruff>=0.14.0",
-    "types-jsonschema>=4.26.0.20260518",
     "types-pyyaml>=6.0.12.20250915",
 ]
 

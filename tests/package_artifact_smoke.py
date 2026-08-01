@@ -21,7 +21,7 @@ def main() -> None:
         raise SystemExit("usage: package_artifact_smoke.py DIST_DIRECTORY")
 
     dist_dir = Path(sys.argv[1])
-    wheel = only_match(dist_dir, "*.whl")
+    wheel = only_match(dist_dir, "ejagent_core-*.whl")
 
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
@@ -49,16 +49,21 @@ def main() -> None:
         "extra == 'mcp'" in line for line in fastmcp_requirements
     ):
         raise AssertionError("fastmcp must only be required by the mcp extra")
-    for dependency in ("jsonschema", "referencing"):
-        requirements = [
-            line
-            for line in metadata.splitlines()
-            if line.startswith(f"Requires-Dist: {dependency}")
-        ]
-        if not requirements or any("extra ==" in line for line in requirements):
-            raise AssertionError(
-                f"{dependency} must be declared as a core wheel dependency"
-            )
+    for removed_package in (
+        "ejagent/agent/",
+        "ejagent/handlers/",
+        "ejagent/middleware/",
+        "ejagent/plugins/",
+        "ejagent/session/",
+    ):
+        if any(name.startswith(removed_package) for name in names):
+            raise AssertionError(f"wheel unexpectedly contains {removed_package}")
+    for removed_module in (
+        "ejagent/providers/base.py",
+        "ejagent/providers/openai.py",
+    ):
+        if removed_module in names:
+            raise AssertionError(f"wheel unexpectedly contains {removed_module}")
 
 
 if __name__ == "__main__":

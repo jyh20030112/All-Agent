@@ -22,6 +22,7 @@ from ejagent.contracts.session import (
     SessionStoreSerializationError,
 )
 from ejagent.storage._file_lock import StoreFileLock
+from ejagent.storage._legacy import load_legacy_session
 from ejagent.storage.codec import (
     run_audit_from_dict,
     run_audit_to_dict,
@@ -133,7 +134,7 @@ class JsonlSessionStore(SessionStore, AuditReader):
         session_id: str,
         root: str | Path | None = None,
     ) -> SessionSnapshot:
-        """Explicitly import one legacy JsonlSessionStorage projection once."""
+        """Explicitly import one legacy JSONL Session projection once."""
 
         normalized = self._normalize_agent_id(agent_id)
         session_id = session_id.strip()
@@ -167,12 +168,15 @@ class JsonlSessionStore(SessionStore, AuditReader):
         session_id: str,
         root: Path,
     ) -> LegacySessionMigration | None:
-        from ejagent.session.errors import SessionError
-        from ejagent.session.jsonl import JsonlSessionStorage
-
         try:
-            session = await JsonlSessionStorage(root).load(session_id)
-        except SessionError as exc:
+            session = await asyncio.to_thread(
+                load_legacy_session,
+                root,
+                session_id,
+            )
+        except SessionMigrationError:
+            raise
+        except Exception as exc:
             raise SessionMigrationError(
                 f"failed to decode legacy Session {session_id!r}: {exc}",
                 remediation="repair or export the legacy journal before migration",

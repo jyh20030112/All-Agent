@@ -2,10 +2,10 @@
 
 ## Status
 
-This document defines the target architecture for the pre-1.0 EJAgent Core
-refactor. It is normative for new contracts. Existing `BaseAgent`, dictionary
-messages, and event-driven Session recording remain migration sources, not
-constraints on the target design.
+This document defines the implemented pre-1.0 EJAgent Core architecture and is
+normative for its contracts. The former stateful agent loop, dictionary-message
+runtime, Handler/Middleware stack, and event-driven Session writer have been
+removed. Only a Store-private decoder remains for one-way legacy migration.
 
 Implementation progress:
 
@@ -38,8 +38,10 @@ Implementation progress:
   seam. Function, composite, and MCP ToolExecutors share the Kernel Tool
   contract; `SkillsContextPipeline` contributes disposable skill instructions.
 - Representative OpenAI, local Tool, MCP, Skills, memory recovery, and durable
-  recovery examples now run through `AgentHarness`. The remaining compatibility
-  execution path is pending removal.
+  recovery examples run through `AgentHarness`.
+- `ejagent` now exports only the new composition surface. Legacy execution and
+  commit packages are absent from built artifacts. Migration stages 1–7 are
+  complete; validation against a second Provider protocol remains.
 
 ## Scope
 

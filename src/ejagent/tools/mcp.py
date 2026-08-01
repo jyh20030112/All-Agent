@@ -14,7 +14,7 @@ from ejagent.contracts.tools import (
     ToolExecutor,
     ToolSemantics,
 )
-from ejagent.plugins.mcp.mcp_manager import McpServerManager
+from ejagent.tools._mcp_manager import McpServerManager
 
 
 class McpManager(Protocol):

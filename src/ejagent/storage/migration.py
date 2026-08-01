@@ -24,7 +24,7 @@ from ejagent.contracts.runs import (
     RunStatus,
 )
 from ejagent.contracts.session import SessionMigrationError, SessionSnapshot
-from ejagent.session.types import AgentSession
+from ejagent.storage._legacy import LegacySessionData
 
 _REMEDIATION = (
     "export the legacy Session with only text, function tool calls, and "
@@ -42,11 +42,11 @@ class LegacySessionMigration:
 
 
 def migrate_legacy_session(
-    session: AgentSession,
+    session: LegacySessionData,
     *,
     agent_id: str | None = None,
 ) -> LegacySessionMigration:
-    """Convert a detached legacy AgentSession without using compacted views."""
+    """Convert projected legacy Session data without using compacted views."""
 
     target_agent_id = agent_id or session.agent_id
     if target_agent_id is None:
@@ -67,7 +67,7 @@ def migrate_legacy_session(
             remediation="use the original agent_id or migrate into a new store key",
         )
 
-    unfinished = [run.run_id for run in session.runs if not run.finished]
+    unfinished = [run.run_id for run in session.runs if run.result is None]
     if unfinished:
         raise SessionMigrationError(
             "legacy Session contains unfinished Run(s): " + ", ".join(unfinished),
@@ -76,9 +76,9 @@ def migrate_legacy_session(
 
     call_names: dict[str, str] = {}
     messages: list[ConversationMessage] = []
-    for index, entry in enumerate(session.entries):
+    for index, message in enumerate(session.entries):
         try:
-            messages.append(_legacy_message(entry.message, call_names=call_names))
+            messages.append(_legacy_message(message, call_names=call_names))
         except SessionMigrationError:
             raise
         except (KeyError, TypeError, ValueError) as exc:
