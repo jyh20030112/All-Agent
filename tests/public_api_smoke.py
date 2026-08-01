@@ -16,6 +16,8 @@ def main() -> None:
 
     if args.expect_no_mcp and importlib.util.find_spec("fastmcp") is not None:
         raise AssertionError("fastmcp must not be installed by the core package")
+    if args.expect_no_mcp and importlib.util.find_spec("anthropic") is not None:
+        raise AssertionError("anthropic must not be installed by the core package")
     if importlib.util.find_spec("simagentplg") is not None:
         raise AssertionError("the former import package must not be installed")
 
@@ -30,6 +32,8 @@ def main() -> None:
         )
     required_exports = {
         "AgentHarness",
+        "AnthropicConfig",
+        "AnthropicModelPort",
         "RuntimeKernel",
         "OpenAIModelPort",
         "ModelConfig",
@@ -81,6 +85,22 @@ def main() -> None:
                 raise AssertionError("MCP startup unexpectedly succeeded")
 
         asyncio.run(check_missing_mcp_message())
+
+        async def check_missing_anthropic_message() -> None:
+            model = ejagent.AnthropicModelPort(
+                ejagent.AnthropicConfig("unused", "unused")
+            )
+            try:
+                await model.start()
+            except RuntimeError as exc:
+                if "ejagent-core[anthropic]" not in str(exc):
+                    raise AssertionError(
+                        "missing Anthropic dependency produced no install guidance"
+                    ) from exc
+            else:
+                raise AssertionError("Anthropic startup unexpectedly succeeded")
+
+        asyncio.run(check_missing_anthropic_message())
 
 
 if __name__ == "__main__":

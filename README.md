@@ -17,6 +17,8 @@ pip install ejagent-core
 uv sync --locked --all-extras --group dev
 ```
 
+Anthropic support is optional: `pip install 'ejagent-core[anthropic]'`.
+
 Configure an OpenAI-compatible endpoint in `.env`:
 
 ```env

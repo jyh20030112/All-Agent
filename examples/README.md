@@ -1,20 +1,21 @@
 # EJAgent Core Examples
 
-Copy `.env.example` to `.env` and configure an OpenAI-compatible provider.
+Copy `.env.example` to `.env` and configure a Provider.
 Run examples from the repository root, for example:
 
 ```bash
 uv run python examples/01_stateful_chat.py
 ```
 
-All examples use the `AgentHarness`/`RuntimeKernel` path with
-`OpenAIModelPort` and make real Provider requests.
+All examples use the `AgentHarness`/`RuntimeKernel` path and make real Provider
+requests.
 
 ## Core Examples
 
 - `01_stateful_chat.py`: typed Conversation state across two committed Runs.
 - `02_custom_tool.py`: a provider-neutral Tool registered through
   `FunctionToolExecutor`.
+- `03_anthropic_chat.py`: the same Harness contract over Anthropic Messages.
 - `04_mcp_tools.py`: opt-in MCP integration through `McpToolExecutor`.
 - `06_skill.py`: disposable skill indexing and explicit instruction projection.
 - `08_session_resume.py`: recovery from `MemorySessionStore` in a new Harness.
@@ -31,6 +32,9 @@ Playwright MCP through `npx`. Install optional support first:
 ```bash
 uv sync --extra mcp
 ```
+
+The Anthropic example requires `uv sync --extra anthropic` plus
+`ANTHROPIC_MODEL` and `ANTHROPIC_API_KEY`.
 
 The Skills example loads `examples/skills/release_notes/`. The catalog index and
 explicitly selected `SKILL.md`, template, and sample are projected into a

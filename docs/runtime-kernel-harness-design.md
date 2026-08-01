@@ -37,11 +37,15 @@ Implementation progress:
 - `OpenAIModelPort` translates typed Context and Tool values at the Provider
   seam. Function, composite, and MCP ToolExecutors share the Kernel Tool
   contract; `SkillsContextPipeline` contributes disposable skill instructions.
-- Representative OpenAI, local Tool, MCP, Skills, memory recovery, and durable
-  recovery examples run through `AgentHarness`.
+- `AnthropicModelPort` independently translates system instructions, content
+  blocks, streamed tool input, and cache-aware usage from the Anthropic
+  Messages protocol. Both Provider adapters pass the same Kernel-facing stream
+  contract without adding Provider concepts to Core.
+- Representative OpenAI, Anthropic, local Tool, MCP, Skills, memory recovery,
+  and durable recovery examples run through `AgentHarness`.
 - `ejagent` now exports only the new composition surface. Legacy execution and
-  commit packages are absent from built artifacts. Migration stages 1–7 are
-  complete; validation against a second Provider protocol remains.
+  commit packages are absent from built artifacts. Migration stages 1–8 are
+  complete.
 
 ## Scope
 

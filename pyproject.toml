@@ -17,6 +17,9 @@ Repository = "https://github.com/jyh20030112/EJAgent"
 Issues = "https://github.com/jyh20030112/EJAgent/issues"
 
 [project.optional-dependencies]
+anthropic = [
+    "anthropic>=0.104.1",
+]
 mcp = [
     "fastmcp>=3.4.2",
 ]

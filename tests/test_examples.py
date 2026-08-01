@@ -4,7 +4,7 @@ from pathlib import Path
 
 from ejagent.context import SkillsContextPipeline
 from ejagent.contracts import CancellationSource, ToolCall
-from ejagent.providers import OpenAIModelPort
+from ejagent.providers import AnthropicModelPort, OpenAIModelPort
 from ejagent.tools import FunctionTool, FunctionToolExecutor
 
 EXAMPLES_DIR = Path(__file__).parents[1] / "examples"
@@ -66,6 +66,12 @@ class ExampleTests(unittest.IsolatedAsyncioTestCase):
                     run_name="example_test",
                 )
                 self.assertIs(namespace["OpenAIModelPort"], OpenAIModelPort)
+
+        namespace = runpy.run_path(
+            EXAMPLES_DIR / "03_anthropic_chat.py",
+            run_name="example_test",
+        )
+        self.assertIs(namespace["AnthropicModelPort"], AnthropicModelPort)
 
 
 if __name__ == "__main__":

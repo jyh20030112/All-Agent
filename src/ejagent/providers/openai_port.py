@@ -89,6 +89,7 @@ class OpenAIModelPort(ModelPort):
                 api_key=self.config.api_key,
                 base_url=self.config.base_url,
                 timeout=self.config.timeout,
+                max_retries=0,
             )
         self._started = True
 

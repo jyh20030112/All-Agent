@@ -7,7 +7,12 @@ from ejagent.context import (
 )
 from ejagent.harness import AgentHarness, MemorySessionStore
 from ejagent.kernel import RuntimeKernel
-from ejagent.providers import ModelConfig, OpenAIModelPort
+from ejagent.providers import (
+    AnthropicConfig,
+    AnthropicModelPort,
+    ModelConfig,
+    OpenAIModelPort,
+)
 from ejagent.skills import Skill, SkillCatalog
 from ejagent.storage import JsonlSessionStore
 from ejagent.tools import (
@@ -19,6 +24,8 @@ from ejagent.tools import (
 
 __all__ = [
     "AgentHarness",
+    "AnthropicConfig",
+    "AnthropicModelPort",
     "CompositeToolExecutor",
     "DerivedCompactionPipeline",
     "FunctionTool",

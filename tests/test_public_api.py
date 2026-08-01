@@ -9,6 +9,8 @@ class PublicApiTests(unittest.TestCase):
     def test_top_level_exports_only_new_composition_surface(self) -> None:
         expected = {
             "AgentHarness",
+            "AnthropicConfig",
+            "AnthropicModelPort",
             "CompositeToolExecutor",
             "DerivedCompactionPipeline",
             "FunctionTool",

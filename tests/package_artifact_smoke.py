@@ -40,6 +40,8 @@ def main() -> None:
         raise AssertionError("wheel metadata has the wrong distribution version")
     if "Provides-Extra: mcp" not in metadata:
         raise AssertionError("wheel metadata does not declare the mcp extra")
+    if "Provides-Extra: anthropic" not in metadata:
+        raise AssertionError("wheel metadata does not declare the anthropic extra")
     fastmcp_requirements = [
         line
         for line in metadata.splitlines()
@@ -49,6 +51,15 @@ def main() -> None:
         "extra == 'mcp'" in line for line in fastmcp_requirements
     ):
         raise AssertionError("fastmcp must only be required by the mcp extra")
+    anthropic_requirements = [
+        line
+        for line in metadata.splitlines()
+        if line.startswith("Requires-Dist: anthropic")
+    ]
+    if not anthropic_requirements or not all(
+        "extra == 'anthropic'" in line for line in anthropic_requirements
+    ):
+        raise AssertionError("anthropic must only be required by its extra")
     for removed_package in (
         "ejagent/agent/",
         "ejagent/handlers/",
