@@ -17,9 +17,9 @@ requests.
   `FunctionToolExecutor`.
 - `03_anthropic_chat.py`: the same Harness contract over Anthropic Messages.
 - `04_mcp_tools.py`: opt-in MCP integration through `McpToolExecutor`.
-- `06_skill.py`: disposable skill indexing and explicit instruction projection.
-- `08_session_resume.py`: recovery from `MemorySessionStore` in a new Harness.
-- `16_durable_session.py`: cross-process recovery from `JsonlSessionStore`.
+- `05_skill.py`: disposable skill indexing and explicit instruction projection.
+- `06_session_resume.py`: recovery from `MemorySessionStore` in a new Harness.
+- `07_durable_session.py`: cross-process recovery from `JsonlSessionStore`.
 
 Every `AgentHarness` has one immutable `agent_id`. Tool-enabled Harnesses expose
 only their configured `ToolExecutor.definitions`; plain assistant text completes
@@ -43,8 +43,8 @@ disposable `ContextView`; they are never committed to Conversation.
 For durable recovery, run:
 
 ```bash
-uv run python examples/16_durable_session.py record
-uv run python examples/16_durable_session.py resume
+uv run python examples/07_durable_session.py record
+uv run python examples/07_durable_session.py resume
 ```
 
 Conversation recovery and append-only Run Audit are separate Store domains.

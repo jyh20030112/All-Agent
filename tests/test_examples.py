@@ -37,7 +37,7 @@ class ExampleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_skill_example_discovers_local_skill(self) -> None:
         namespace = runpy.run_path(
-            EXAMPLES_DIR / "06_skill.py",
+            EXAMPLES_DIR / "05_skill.py",
             run_name="example_test",
         )
         pipeline = SkillsContextPipeline(namespace["SKILLS_DIR"])
@@ -56,9 +56,9 @@ class ExampleTests(unittest.IsolatedAsyncioTestCase):
             "01_stateful_chat.py",
             "02_custom_tool.py",
             "04_mcp_tools.py",
-            "06_skill.py",
-            "08_session_resume.py",
-            "16_durable_session.py",
+            "05_skill.py",
+            "06_session_resume.py",
+            "07_durable_session.py",
         ):
             with self.subTest(example=filename):
                 namespace = runpy.run_path(
