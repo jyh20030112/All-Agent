@@ -1,69 +1,44 @@
-"""Persist a real conversation and resume it in a new agent instance."""
+"""Resume a committed Conversation in a new AgentHarness instance."""
 
 import asyncio
 
-from ejagent import (
-    BaseAgent,
-    MemorySessionStorage,
-    ModelConfig,
-    OpenAIModelAdapter,
-    SessionRecorder,
+from ejagent.contracts import SystemMessage
+from ejagent.harness import AgentHarness, MemorySessionStore
+from ejagent.providers import ModelConfig, OpenAIModelPort
+from ejagent.tools import FunctionToolExecutor
+
+AGENT_ID = "session-demo"
+SYSTEM_PROMPT = (
+    "Preserve user-provided facts exactly. Answer only from the conversation."
 )
 
 
 async def main() -> None:
-    storage = MemorySessionStorage()
-    recorder = SessionRecorder(session_id="resume-demo", storage=storage)
-
-    first_agent = BaseAgent(
-        OpenAIModelAdapter(ModelConfig.from_env()),
-        agent_id="session-demo",
-        system_prompt=(
-            "Preserve user-provided facts exactly. Answer only from the "
-            "conversation and do not invent implementation details."
-        ),
-        event_sink=recorder,
+    store = MemorySessionStore()
+    first = AgentHarness(
+        agent_id=AGENT_ID,
+        model=OpenAIModelPort(ModelConfig.from_env()),
+        tools=FunctionToolExecutor(),
+        store=store,
+        initial_messages=(SystemMessage(SYSTEM_PROMPT),),
     )
-    try:
-        first = await first_agent.run(
-            task=(
-                "Store this exact statement and reply only ACK: EJAgent Core "
-                "uses lifecycle events to build Sessions without coupling "
-                "persistence to the Agent Loop."
-            )
-        )
-        print(f"first response: {first.output}")
-    finally:
-        await first_agent.shutdown()
+    async with first:
+        outcome = await first.run("Remember this exact code: CORE-2048")
+        print(f"first response: {outcome.result.output}")
 
-    saved = await recorder.load()
-    if saved is None:
-        raise RuntimeError("session was not saved")
-
-    resumed_agent = BaseAgent(
-        OpenAIModelAdapter(ModelConfig.from_env()),
-        agent_id="session-demo",
-        system_prompt=(
-            "Preserve user-provided facts exactly. Answer only from the "
-            "conversation and do not invent implementation details."
-        ),
-        event_sink=recorder,
+    resumed = AgentHarness(
+        agent_id=AGENT_ID,
+        model=OpenAIModelPort(ModelConfig.from_env()),
+        tools=FunctionToolExecutor(),
+        store=store,
+        initial_messages=(SystemMessage(SYSTEM_PROMPT),),
     )
-    resumed_agent.reset(saved.messages)
-    try:
-        resumed = await resumed_agent.run(
-            task="Repeat the exact stored EJAgent Core statement."
-        )
-        print(f"resumed response: {resumed.output}")
-    finally:
-        await resumed_agent.shutdown()
+    async with resumed:
+        outcome = await resumed.run("Return only the exact stored code.")
+        print(f"resumed response: {outcome.result.output}")
 
-    updated = await recorder.load()
-    if updated is None:
-        raise RuntimeError("resumed session was not saved")
-
-    print(f"saved runs: {len(updated.runs)}")
-    print(f"message roles: {[message['role'] for message in updated.messages]}")
+    print(f"committed revision: {resumed.revision}")
+    print(f"audited runs: {len(await store.load_audit(AGENT_ID))}")
 
 
 if __name__ == "__main__":

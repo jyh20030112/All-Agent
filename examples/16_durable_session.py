@@ -1,75 +1,50 @@
-"""Persist a Session to disk and resume it in a separate invocation."""
+"""Persist Core Conversation and Audit state across process invocations."""
 
 import argparse
 import asyncio
 import os
 from pathlib import Path
 
-from ejagent import (
-    BaseAgent,
-    JsonlSessionStorage,
-    ModelConfig,
-    OpenAIModelAdapter,
-    SessionRecorder,
-)
+from ejagent.contracts import SystemMessage
+from ejagent.harness import AgentHarness
+from ejagent.providers import ModelConfig, OpenAIModelPort
+from ejagent.storage import JsonlSessionStore
+from ejagent.tools import FunctionToolExecutor
 
-SESSION_ID = "durable-session-demo"
 AGENT_ID = "durable-session-agent"
 SYSTEM_PROMPT = (
-    "Preserve user-provided facts exactly and answer only from durable "
-    "conversation history."
+    "Preserve user-provided facts exactly and answer only from durable history."
 )
 
 
-async def record(storage: JsonlSessionStorage) -> None:
-    recorder = SessionRecorder(session_id=SESSION_ID, storage=storage)
-    agent = BaseAgent(
-        OpenAIModelAdapter(ModelConfig.from_env()),
+def harness(store: JsonlSessionStore) -> AgentHarness:
+    return AgentHarness(
         agent_id=AGENT_ID,
-        system_prompt=SYSTEM_PROMPT,
-        event_sink=recorder,
+        model=OpenAIModelPort(ModelConfig.from_env()),
+        tools=FunctionToolExecutor(),
+        store=store,
+        initial_messages=(SystemMessage(SYSTEM_PROMPT),),
     )
-    try:
-        result = await agent.run(
-            task=(
-                "Remember this exact project code and reply only ACK: SIM-SESSION-2048"
-            )
+
+
+async def record(store: JsonlSessionStore) -> None:
+    agent = harness(store)
+    async with agent:
+        outcome = await agent.run(
+            "Remember this exact project code and reply only ACK: CORE-2048"
         )
-        print(f"record response: {result.output}")
-    finally:
-        await agent.shutdown()
-
-    saved = await storage.load(SESSION_ID)
-    if saved is None:
-        raise RuntimeError("durable Session was not saved")
-    print(f"saved runs: {len(saved.runs)}")
+        print(f"record response: {outcome.result.output}")
+    print(f"committed revision: {agent.revision}")
 
 
-async def resume(storage: JsonlSessionStorage) -> None:
-    saved = await storage.load(SESSION_ID)
-    if saved is None:
+async def resume(store: JsonlSessionStore) -> None:
+    if await store.load(AGENT_ID) is None:
         raise RuntimeError("run the record command before resume")
-
-    recorder = SessionRecorder(session_id=SESSION_ID, storage=storage)
-    agent = BaseAgent(
-        OpenAIModelAdapter(ModelConfig.from_env()),
-        agent_id=AGENT_ID,
-        system_prompt=SYSTEM_PROMPT,
-        event_sink=recorder,
-    )
-    agent.restore_session(saved)
-    try:
-        result = await agent.run(
-            task="Return only the exact project code stored previously."
-        )
-        print(f"resume response: {result.output}")
-    finally:
-        await agent.shutdown()
-
-    updated = await storage.load(SESSION_ID)
-    if updated is None:
-        raise RuntimeError("resumed Session was not saved")
-    print(f"saved runs after resume: {len(updated.runs)}")
+    agent = harness(store)
+    async with agent:
+        outcome = await agent.run("Return only the exact project code stored before.")
+        print(f"resume response: {outcome.result.output}")
+    print(f"audited runs: {len(await store.load_audit(AGENT_ID))}")
 
 
 async def main() -> None:
@@ -80,11 +55,11 @@ async def main() -> None:
         default=os.getenv("EJAGENT_SESSION_DIR", ".ejagent-sessions"),
     )
     args = parser.parse_args()
-    storage = JsonlSessionStorage(Path(args.session_dir))
+    store = JsonlSessionStore(Path(args.session_dir))
     if args.command == "record":
-        await record(storage)
+        await record(store)
     else:
-        await resume(storage)
+        await resume(store)
 
 
 if __name__ == "__main__":

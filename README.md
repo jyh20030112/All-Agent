@@ -11,6 +11,42 @@ Git, or explicit completion.
 
 Requires Python 3.12 or newer.
 
+## Runtime Kernel API
+
+The pre-1.0 migration target is `AgentHarness`, which owns one logical agent's
+lifecycle and committed Conversation while `RuntimeKernel` executes one Run.
+Concrete integrations stay behind narrow ports:
+
+```python
+from ejagent.contracts import SystemMessage
+from ejagent.harness import AgentHarness
+from ejagent.providers import ModelConfig, OpenAIModelPort
+from ejagent.storage import JsonlSessionStore
+from ejagent.tools import FunctionToolExecutor
+
+harness = AgentHarness(
+    agent_id="assistant",
+    model=OpenAIModelPort(ModelConfig.from_env()),
+    tools=FunctionToolExecutor(),
+    store=JsonlSessionStore(".ejagent-sessions"),
+    initial_messages=(SystemMessage("Answer precisely."),),
+)
+
+async with harness:
+    outcome = await harness.run("Remember that my project is EJAgent.")
+    print(outcome.result.output)
+```
+
+`OpenAIModelPort` converts typed Context messages and Tool definitions only at
+the Provider seam. `McpToolExecutor` exposes MCP tools through the same
+provider-neutral Tool contract. `SkillsContextPipeline` adds a catalog and an
+explicitly selected Skill to a disposable ContextView without modifying
+Conversation. See `examples/01`, `02`, `04`, `06`, `08`, and `16`.
+
+The API reference below still documents the compatibility execution path. It
+remains available only to support staged migration and will be removed before
+the next pre-1.0 release.
+
 ## Core capabilities
 
 - Stateful `BaseAgent` with persistent conversation history and `reset()`

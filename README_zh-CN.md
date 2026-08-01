@@ -9,6 +9,39 @@ EJAgent Core 是一个 OpenAI-first Agent Harness Core，围绕八个核心维�
 
 需要 Python 3.12 或更高版本。
 
+## Runtime Kernel API
+
+pre-1.0 的迁移目标入口是 `AgentHarness`：它负责单个逻辑 Agent 的生命周期和
+已提交 Conversation，`RuntimeKernel` 只执行一次 Run。具体集成均位于窄接口之后：
+
+```python
+from ejagent.contracts import SystemMessage
+from ejagent.harness import AgentHarness
+from ejagent.providers import ModelConfig, OpenAIModelPort
+from ejagent.storage import JsonlSessionStore
+from ejagent.tools import FunctionToolExecutor
+
+harness = AgentHarness(
+    agent_id="assistant",
+    model=OpenAIModelPort(ModelConfig.from_env()),
+    tools=FunctionToolExecutor(),
+    store=JsonlSessionStore(".ejagent-sessions"),
+    initial_messages=(SystemMessage("Answer precisely."),),
+)
+
+async with harness:
+    outcome = await harness.run("记住我的项目是 EJAgent。")
+    print(outcome.result.output)
+```
+
+`OpenAIModelPort` 仅在 Provider 边界转换类型化 Context 和 Tool；
+`McpToolExecutor` 复用同一套 Provider-neutral Tool 协议；
+`SkillsContextPipeline` 只向一次性的 ContextView 投影 Skill，不修改
+Conversation。可参考示例 `01`、`02`、`04`、`06`、`08` 和 `16`。
+
+下方 API 参考仍描述兼容执行路径，它只用于分阶段迁移，并将在下一个 pre-1.0
+版本前删除。
+
 ## 核心能力
 
 - 有状态的 `BaseAgent`，支持持久对话历史和 `reset()`

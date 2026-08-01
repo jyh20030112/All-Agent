@@ -16,7 +16,9 @@ from ejagent.providers.base import (
     ModelToolCall,
     ModelUsage,
 )
-from ejagent.providers.openai import ModelConfig, OpenAIModelAdapter
+from ejagent.providers.config import ModelConfig
+from ejagent.providers.openai import OpenAIModelAdapter
+from ejagent.providers.openai_port import OpenAIModelPort
 
 __all__ = [
     "AssistantMessage",
@@ -35,4 +37,5 @@ __all__ = [
     "ModelUsage",
     "ModelConfig",
     "OpenAIModelAdapter",
+    "OpenAIModelPort",
 ]

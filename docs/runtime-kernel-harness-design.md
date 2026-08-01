@@ -34,8 +34,12 @@ Implementation progress:
   Legacy JSONL Sessions can be imported once or rejected with an actionable
   `SessionMigrationError`; compacted projections are not treated as source
   history.
-- Provider, MCP, and Skills adapters remain pending. The legacy execution path
-  is not yet connected to the new Kernel.
+- `OpenAIModelPort` translates typed Context and Tool values at the Provider
+  seam. Function, composite, and MCP ToolExecutors share the Kernel Tool
+  contract; `SkillsContextPipeline` contributes disposable skill instructions.
+- Representative OpenAI, local Tool, MCP, Skills, memory recovery, and durable
+  recovery examples now run through `AgentHarness`. The remaining compatibility
+  execution path is pending removal.
 
 ## Scope
 
