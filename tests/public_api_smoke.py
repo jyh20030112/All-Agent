@@ -16,8 +16,10 @@ def main() -> None:
 
     if args.expect_no_mcp and importlib.util.find_spec("fastmcp") is not None:
         raise AssertionError("fastmcp must not be installed by the core package")
+    if args.expect_no_mcp and importlib.util.find_spec("anthropic") is not None:
+        raise AssertionError("anthropic must not be installed by the core package")
     if importlib.util.find_spec("simagentplg") is not None:
-        raise AssertionError("the legacy simagentplg import must not be installed")
+        raise AssertionError("the former import package must not be installed")
 
     import ejagent
 
@@ -28,71 +30,39 @@ def main() -> None:
         raise AssertionError(
             f"public exports do not resolve: {', '.join(missing_attributes)}"
         )
-
     required_exports = {
+        "AgentHarness",
+        "AnthropicConfig",
+        "AnthropicModelPort",
+        "RuntimeKernel",
+        "OpenAIModelPort",
+        "ModelConfig",
+        "FunctionToolExecutor",
+        "CompositeToolExecutor",
+        "McpToolExecutor",
+        "IdentityContextPipeline",
+        "DerivedCompactionPipeline",
+        "SkillsContextPipeline",
+        "MemorySessionStore",
+        "JsonlSessionStore",
+        "SkillCatalog",
+    }
+    if missing := required_exports.difference(ejagent.__all__):
+        raise AssertionError(
+            f"required public exports are missing: {', '.join(sorted(missing))}"
+        )
+    forbidden_exports = {
         "BaseAgent",
-        "BehaviorAction",
-        "BehaviorDecision",
-        "BehaviorHook",
-        "BehaviorHookError",
-        "TurnSnapshot",
         "AgentOrchestrator",
-        "AgentRunResult",
         "ModelAdapter",
         "OpenAIModelAdapter",
+        "BaseHandler",
         "ToolMiddleware",
-        "ToolExecutionPolicy",
-        "RuleBasedToolPolicy",
-        "ToolPolicyMiddleware",
-        "ToolPolicyRule",
-        "ToolPolicyAction",
-        "ToolPolicyDecision",
-        "ToolApprover",
-        "ToolApprovalRequest",
-        "ToolApprovalDecision",
-        "ToolSchemaConfigurationError",
-        "ToolSchemaValidationMiddleware",
-        "ToolDefinition",
-        "ToolEffect",
-        "McpToolHandler",
-        "McpServerManager",
-        "SkillManager",
         "SessionStorage",
-        "Compactor",
-        "AutoCompactionPolicy",
-        "ContextOverflowError",
-        "ControlInput",
-        "ControlInputKind",
-        "ControlReceipt",
-        "ControlStatus",
-        "ContinueRejectedReason",
-        "ContinueRejectedError",
-        "FollowUpFailurePolicy",
-        "FollowUpDiscardReason",
-        "FollowUpHandle",
-        "FollowUpError",
-        "FollowUpRejectedError",
-        "FollowUpDiscardedError",
-        "CompactionTrigger",
-        "ModelCompactor",
-        "JsonlSessionStorage",
-        "SessionTreeStorage",
-        "SessionLockTimeoutError",
-        "SessionRecord",
-        "SessionBranch",
-        "SessionCheckout",
-        "SessionRetry",
-        "SteeringApplied",
-        "SteeringDiscarded",
-        "AgentContinued",
-        "SessionRunIntent",
-        "session_to_dict",
-        "session_from_dict",
     }
-    missing_exports = required_exports.difference(ejagent.__all__)
-    if missing_exports:
+    if present := forbidden_exports.intersection(ejagent.__all__):
         raise AssertionError(
-            f"required public exports are missing: {', '.join(sorted(missing_exports))}"
+            f"legacy exports remain public: {', '.join(sorted(present))}"
         )
 
     if not files("ejagent").joinpath("py.typed").is_file():
@@ -103,9 +73,9 @@ def main() -> None:
     if args.expect_no_mcp:
 
         async def check_missing_mcp_message() -> None:
-            manager = ejagent.McpServerManager("unused.json")
+            executor = ejagent.McpToolExecutor("unused.json")
             try:
-                await manager.startup()
+                await executor.start()
             except RuntimeError as exc:
                 if "ejagent-core[mcp]" not in str(exc):
                     raise AssertionError(
@@ -115,6 +85,22 @@ def main() -> None:
                 raise AssertionError("MCP startup unexpectedly succeeded")
 
         asyncio.run(check_missing_mcp_message())
+
+        async def check_missing_anthropic_message() -> None:
+            model = ejagent.AnthropicModelPort(
+                ejagent.AnthropicConfig("unused", "unused")
+            )
+            try:
+                await model.start()
+            except RuntimeError as exc:
+                if "ejagent-core[anthropic]" not in str(exc):
+                    raise AssertionError(
+                        "missing Anthropic dependency produced no install guidance"
+                    ) from exc
+            else:
+                raise AssertionError("Anthropic startup unexpectedly succeeded")
+
+        asyncio.run(check_missing_anthropic_message())
 
 
 if __name__ == "__main__":

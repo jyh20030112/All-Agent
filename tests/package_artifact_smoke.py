@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sys
-import tarfile
 import zipfile
 from pathlib import Path
 
@@ -22,18 +21,7 @@ def main() -> None:
         raise SystemExit("usage: package_artifact_smoke.py DIST_DIRECTORY")
 
     dist_dir = Path(sys.argv[1])
-    wheel = only_match(dist_dir, "*.whl")
-    sdist = only_match(dist_dir, "*.tar.gz")
-
-    with tarfile.open(sdist, "r:gz") as archive:
-        sdist_names = archive.getnames()
-        bundled_pi = [
-            name for name in sdist_names if "/pi/" in name or name.endswith("/pi")
-        ]
-    if bundled_pi:
-        raise AssertionError("sdist unexpectedly contains the pi reference repo")
-    if any(name.endswith("/.gitmodules") for name in sdist_names):
-        raise AssertionError("sdist unexpectedly contains submodule metadata")
+    wheel = only_match(dist_dir, "ejagent_core-*.whl")
 
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
@@ -52,6 +40,8 @@ def main() -> None:
         raise AssertionError("wheel metadata has the wrong distribution version")
     if "Provides-Extra: mcp" not in metadata:
         raise AssertionError("wheel metadata does not declare the mcp extra")
+    if "Provides-Extra: anthropic" not in metadata:
+        raise AssertionError("wheel metadata does not declare the anthropic extra")
     fastmcp_requirements = [
         line
         for line in metadata.splitlines()
@@ -61,16 +51,30 @@ def main() -> None:
         "extra == 'mcp'" in line for line in fastmcp_requirements
     ):
         raise AssertionError("fastmcp must only be required by the mcp extra")
-    for dependency in ("jsonschema", "referencing"):
-        requirements = [
-            line
-            for line in metadata.splitlines()
-            if line.startswith(f"Requires-Dist: {dependency}")
-        ]
-        if not requirements or any("extra ==" in line for line in requirements):
-            raise AssertionError(
-                f"{dependency} must be declared as a core wheel dependency"
-            )
+    anthropic_requirements = [
+        line
+        for line in metadata.splitlines()
+        if line.startswith("Requires-Dist: anthropic")
+    ]
+    if not anthropic_requirements or not all(
+        "extra == 'anthropic'" in line for line in anthropic_requirements
+    ):
+        raise AssertionError("anthropic must only be required by its extra")
+    for removed_package in (
+        "ejagent/agent/",
+        "ejagent/handlers/",
+        "ejagent/middleware/",
+        "ejagent/plugins/",
+        "ejagent/session/",
+    ):
+        if any(name.startswith(removed_package) for name in names):
+            raise AssertionError(f"wheel unexpectedly contains {removed_package}")
+    for removed_module in (
+        "ejagent/providers/base.py",
+        "ejagent/providers/openai.py",
+    ):
+        if removed_module in names:
+            raise AssertionError(f"wheel unexpectedly contains {removed_module}")
 
 
 if __name__ == "__main__":

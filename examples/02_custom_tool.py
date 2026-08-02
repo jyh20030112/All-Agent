@@ -1,25 +1,23 @@
-"""Compose an agent with a custom atomic math tool."""
+"""Compose an AgentHarness with a custom atomic math tool."""
 
 import asyncio
-from collections.abc import Mapping
-from typing import Any
 
-from ejagent import (
-    BaseAgent,
+from ejagent.contracts import (
     CancellationToken,
-    MethodToolHandler,
-    ModelConfig,
-    OpenAIModelAdapter,
-    StepOutcome,
+    ToolCall,
     ToolControl,
     ToolDefinition,
-    ToolEffect,
+    ToolExecutionResult,
+    ToolSemantics,
 )
+from ejagent.harness import AgentHarness
+from ejagent.providers import ModelConfig, OpenAIModelPort
+from ejagent.tools import FunctionTool, FunctionToolExecutor
 
 ADD_TOOL = ToolDefinition(
     name="add",
     description="Add two numbers.",
-    parameters={
+    input_schema={
         "type": "object",
         "properties": {
             "left": {"type": "number"},
@@ -27,44 +25,45 @@ ADD_TOOL = ToolDefinition(
         },
         "required": ["left", "right"],
     },
-    effect=ToolEffect.READ_ONLY,
+    semantics=ToolSemantics.read_only(),
 )
 
 
-class MathHandler(MethodToolHandler):
-    def __init__(self) -> None:
-        super().__init__((ADD_TOOL,))
-
-    async def do_add(
-        self,
-        arguments: Mapping[str, Any],
-        *,
-        cancellation: CancellationToken | None = None,
-    ) -> StepOutcome:
-        left = arguments.get("left")
-        right = arguments.get("right")
-        if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
-            return StepOutcome(
-                {"status": "error", "error": "left and right must be numbers"}
-            )
-        return StepOutcome(
-            {"status": "success", "value": left + right},
-            control=ToolControl.COMPLETE,
+async def add(
+    call: ToolCall,
+    cancellation: CancellationToken,
+) -> ToolExecutionResult:
+    cancellation.raise_if_cancelled()
+    left = call.arguments.get("left")
+    right = call.arguments.get("right")
+    if (
+        isinstance(left, bool)
+        or not isinstance(left, (int, float))
+        or isinstance(right, bool)
+        or not isinstance(right, (int, float))
+    ):
+        return ToolExecutionResult(
+            {"status": "error", "error": "left and right must be numbers"},
+            error="left and right must be numbers",
         )
+    value = left + right
+    return ToolExecutionResult(
+        {"status": "success", "value": value},
+        control=ToolControl.COMPLETE,
+        output=str(value),
+    )
 
 
 async def main() -> None:
-    agent = BaseAgent(
-        OpenAIModelAdapter(ModelConfig.from_env()),
+    harness = AgentHarness(
         agent_id="calculator",
-        handlers=[MathHandler()],
+        model=OpenAIModelPort(ModelConfig.from_env()),
+        tools=FunctionToolExecutor((FunctionTool(ADD_TOOL, add),)),
     )
 
-    try:
-        result = await agent.runtime(task="Use the add tool to calculate 19.5 + 22.5.")
-        print(result)
-    finally:
-        await agent.shutdown()
+    async with harness:
+        outcome = await harness.run("Use the add tool to calculate 19.5 + 22.5.")
+        print(outcome.result.output)
 
 
 if __name__ == "__main__":

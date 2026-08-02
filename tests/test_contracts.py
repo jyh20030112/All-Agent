@@ -1,0 +1,231 @@
+from __future__ import annotations
+
+import unittest
+from datetime import UTC, datetime
+
+from ejagent.contracts import (
+    AssistantMessage,
+    AuditRecord,
+    ContextSummary,
+    ConversationSnapshot,
+    FailureCode,
+    RunDelta,
+    RunFailure,
+    RunIntent,
+    RunLimits,
+    RunOutcome,
+    RunPhase,
+    RunResult,
+    RunSpec,
+    RunStatus,
+    SessionCommit,
+    StopReason,
+    ToolCall,
+    ToolResultMessage,
+    TransientInstruction,
+    UserMessage,
+    is_context_message,
+    is_conversation_message,
+    thaw_json_value,
+)
+
+
+class MessageContractTests(unittest.TestCase):
+    def test_tool_call_recursively_freezes_detached_arguments(self) -> None:
+        source = {"path": "README.md", "options": {"lines": [1, 2]}}
+
+        call = ToolCall(id="call-1", name="read", arguments=source)
+        source["path"] = "changed"
+        options = source["options"]
+        assert isinstance(options, dict)
+        lines = options["lines"]
+        assert isinstance(lines, list)
+        lines.append(3)
+
+        self.assertEqual(call.arguments["path"], "README.md")
+        self.assertEqual(
+            thaw_json_value(call.arguments),
+            {"path": "README.md", "options": {"lines": [1, 2]}},
+        )
+        with self.assertRaises(TypeError):
+            call.arguments["path"] = "forbidden"  # type: ignore[index]
+
+    def test_assistant_requires_text_or_tool_calls(self) -> None:
+        with self.assertRaisesRegex(ValueError, "text or tool calls"):
+            AssistantMessage()
+
+        message = AssistantMessage(tool_calls=(ToolCall(id="call-1", name="lookup"),))
+
+        self.assertEqual(message.tool_calls[0].name, "lookup")
+
+    def test_tool_result_is_typed_and_immutable(self) -> None:
+        source = {"ok": True, "items": ["a"]}
+
+        message = ToolResultMessage(
+            tool_call_id="call-1",
+            tool_name="lookup",
+            result=source,
+        )
+        source["ok"] = False
+
+        self.assertEqual(
+            thaw_json_value(message.result),
+            {"ok": True, "items": ["a"]},
+        )
+
+    def test_context_summary_is_not_a_conversation_message(self) -> None:
+        summary = ContextSummary(
+            source_revision_start=1,
+            source_revision_end=4,
+            content="Earlier work was summarized.",
+            compactor_id="test",
+        )
+
+        self.assertEqual(summary.source_revision_end, 4)
+        self.assertTrue(is_context_message(summary))
+        self.assertFalse(is_conversation_message(summary))
+
+    def test_transient_instruction_cannot_enter_conversation(self) -> None:
+        instruction = TransientInstruction("focus on safety", "steering")
+
+        self.assertTrue(is_context_message(instruction))
+        self.assertFalse(is_conversation_message(instruction))
+
+
+class DataDomainContractTests(unittest.TestCase):
+    def test_commit_produces_separate_conversation_and_audit_values(self) -> None:
+        base = ConversationSnapshot(
+            revision=2,
+            messages=(UserMessage("existing"),),
+        )
+        result = RunResult(
+            run_id="run-3",
+            status=RunStatus.COMPLETED,
+            stop_reason=StopReason.TEXT_RESPONSE,
+            turns=1,
+            output="done",
+        )
+        outcome = RunOutcome(
+            result=result,
+            delta=RunDelta(
+                base_revision=2,
+                messages=(AssistantMessage(content="done"),),
+            ),
+        )
+
+        commit = SessionCommit(agent_id="agent", base=base, outcome=outcome)
+
+        self.assertEqual(commit.resulting_conversation.revision, 3)
+        self.assertEqual(
+            commit.resulting_conversation.messages,
+            (UserMessage("existing"), AssistantMessage(content="done")),
+        )
+        self.assertEqual(base.messages, (UserMessage("existing"),))
+        self.assertEqual(commit.audit.run_id, "run-3")
+        self.assertTrue(commit.audit.committed)
+        self.assertFalse(hasattr(commit.audit, "messages"))
+
+
+class RunContractTests(unittest.TestCase):
+    def test_run_spec_freezes_inputs_at_one_revision(self) -> None:
+        messages = [UserMessage("existing input")]
+        metadata = {"trace": {"labels": ["contract"]}}
+
+        spec = RunSpec(
+            run_id="run-1",
+            base_revision=7,
+            intent=RunIntent.TASK,
+            task="new task",
+            messages=messages,
+            configuration_revision="config-3",
+            metadata=metadata,
+        )
+        messages.append(UserMessage("late mutation"))
+        trace = metadata["trace"]
+        assert isinstance(trace, dict)
+        labels = trace["labels"]
+        assert isinstance(labels, list)
+        labels.append("late")
+
+        self.assertEqual(spec.messages, (UserMessage("existing input"),))
+        self.assertEqual(
+            thaw_json_value(spec.metadata),
+            {"trace": {"labels": ["contract"]}},
+        )
+
+    def test_continue_spec_rejects_a_task(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must not contain a task"):
+            RunSpec(
+                run_id="run-1",
+                base_revision=0,
+                intent=RunIntent.CONTINUE,
+                task="unexpected",
+                messages=(),
+            )
+
+    def test_limits_reject_boolean_in_integer_fields(self) -> None:
+        with self.assertRaisesRegex(TypeError, "max_turns must be an integer"):
+            RunLimits(max_turns=True)  # type: ignore[arg-type]
+
+    def test_delta_proposes_the_next_revision(self) -> None:
+        delta = RunDelta(
+            base_revision=4,
+            messages=(UserMessage("task"),),
+        )
+
+        self.assertEqual(delta.next_revision, 5)
+
+    def test_failed_outcome_requires_structured_failure(self) -> None:
+        result = RunResult(
+            run_id="run-1",
+            status=RunStatus.FAILED,
+            stop_reason=StopReason.RUNTIME_ERROR,
+            turns=1,
+        )
+
+        with self.assertRaisesRegex(ValueError, "requires a RunFailure"):
+            RunOutcome(result=result, delta=RunDelta(base_revision=0))
+
+        outcome = RunOutcome(
+            result=result,
+            delta=RunDelta(base_revision=0),
+            failure=RunFailure(
+                phase=RunPhase.RUNTIME,
+                code=FailureCode.RUNTIME_ERROR,
+                message="expected failure",
+            ),
+        )
+
+        self.assertEqual(outcome.failure.code, FailureCode.RUNTIME_ERROR)
+
+    def test_audit_records_are_ordered_and_belong_to_the_run(self) -> None:
+        result = RunResult(
+            run_id="run-1",
+            status=RunStatus.COMPLETED,
+            stop_reason=StopReason.TEXT_RESPONSE,
+            turns=1,
+            output="done",
+        )
+        later = AuditRecord(
+            run_id="run-1",
+            sequence=2,
+            kind="run_finished",
+            occurred_at=datetime.now(UTC),
+        )
+        earlier = AuditRecord(
+            run_id="run-1",
+            sequence=1,
+            kind="run_started",
+            occurred_at=datetime.now(UTC),
+        )
+
+        with self.assertRaisesRegex(ValueError, "unique and ordered"):
+            RunOutcome(
+                result=result,
+                delta=RunDelta(base_revision=0),
+                audit_records=(later, earlier),
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

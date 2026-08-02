@@ -1,31 +1,27 @@
-"""Plain chat with stateful conversation memory."""
+"""Run two tasks against one stateful AgentHarness."""
 
 import asyncio
 
-from ejagent import BaseAgent, ModelConfig, OpenAIModelAdapter
+from ejagent.contracts import SystemMessage
+from ejagent.harness import AgentHarness
+from ejagent.providers import ModelConfig, OpenAIModelPort
+from ejagent.tools import FunctionToolExecutor
 
 
 async def main() -> None:
-    agent = BaseAgent(
-        OpenAIModelAdapter(ModelConfig.from_env()),
+    harness = AgentHarness(
         agent_id="tutor",
-        system_prompt="You are a concise Python tutor.",
+        model=OpenAIModelPort(ModelConfig.from_env()),
+        tools=FunctionToolExecutor(),
+        initial_messages=(SystemMessage("You are a concise Python tutor."),),
     )
 
-    try:
-        first = await agent.runtime(
-            task="Remember that my preferred language is Python."
-        )
-        print(f"First response: {first}")
+    async with harness:
+        first = await harness.run("Remember that my preferred language is Python.")
+        print(f"First response: {first.result.output}")
 
-        second = await agent.runtime(task="Which programming language do I prefer?")
-        print(f"Memory response: {second}")
-
-        agent.reset()
-        third = await agent.runtime(task="Which programming language do I prefer?")
-        print(f"After reset: {third}")
-    finally:
-        await agent.shutdown()
+        second = await harness.run("Which programming language do I prefer?")
+        print(f"Memory response: {second.result.output}")
 
 
 if __name__ == "__main__":
