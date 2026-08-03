@@ -7,6 +7,11 @@ one model–tool execution (`RuntimeKernel`) from durable state, lifecycle, and
 control (`AgentHarness`). Conversation, Run Audit, and disposable model context
 are distinct data domains.
 
+For a class-by-class explanation, configuration reference, and complete Run
+flow, see [Core Classes, Configuration, and Runtime Flow](docs/core-classes-and-runtime-flow.md).
+For practical recipes covering every implemented feature, see the
+[Full Usage Guide](docs/usage-guide.md).
+
 Requires Python 3.12 or newer.
 
 ## Install
