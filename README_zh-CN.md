@@ -6,6 +6,10 @@ EJAgent Core 是面向单个逻辑 Agent 的小型可扩展运行时。它将一
 （`RuntimeKernel`）与持久状态、生命周期和控制（`AgentHarness`）分离，并明确区分
 Conversation、Run Audit 与一次性的模型 Context。
 
+逐类说明、完整配置参考和 Run 调用链请阅读
+[Core 类、配置与运行链路](docs/core-classes-and-runtime-flow.md)。
+从安装到全部功能的可复制用法请阅读[全功能使用指南](docs/usage-guide.md)。
+
 需要 Python 3.12 或更高版本。
 
 ## 安装
