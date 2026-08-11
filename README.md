@@ -1,8 +1,21 @@
-# EJAgent Core
+<div align="center">
+  <img src="assets/ejagent-mascot.svg" width="180" alt="EJAgent mascot hatching from an egg">
+  <h1>EJAgent Core</h1>
+  <p><em>Hatch an agent of your own — a highly customizable Python runtime for reliable AI agents.</em></p>
+  <p>
+    <a href="https://github.com/jyh20030112/EJAgent/stargazers"><img src="https://img.shields.io/github/stars/jyh20030112/EJAgent" alt="GitHub stars"></a>
+    <a href="https://pypi.org/project/ejagent-core/"><img src="https://img.shields.io/pypi/v/ejagent-core" alt="PyPI version"></a>
+    <a href="https://github.com/jyh20030112/EJAgent/actions/workflows/ci.yml"><img src="https://github.com/jyh20030112/EJAgent/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT license"></a>
+    <br>
+    <img src="https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python 3.12+">
+    <img src="https://img.shields.io/badge/asyncio-native-4B8BBE" alt="asyncio native">
+    <img src="https://img.shields.io/badge/MCP-ready-7C3AED" alt="MCP ready">
+  </p>
+  <p><strong>English</strong> · <a href="README_zh-CN.md">简体中文</a></p>
+</div>
 
-[English](README.md) | [简体中文](README_zh-CN.md)
-
-Build stateful AI agents without giving up control of how they run.
+---
 
 EJAgent Core is a lightweight Python runtime for creating agents that can use
 tools, retain conversation state, recover after restarts, and accept live
@@ -49,14 +62,14 @@ of your application code, but every integration boundary remains replaceable.
 EJAgent Core requires Python 3.12 or newer.
 
 ```bash
-pip install ejagent-core
+uv add ejagent-core
 ```
 
-Optional integrations:
+Add an optional integration when needed:
 
 ```bash
-pip install 'ejagent-core[anthropic]'
-pip install 'ejagent-core[mcp]'
+uv add 'ejagent-core[anthropic]'  # Anthropic
+uv add 'ejagent-core[mcp]'        # MCP
 ```
 
 ## Quick Start

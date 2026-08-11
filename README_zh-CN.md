@@ -1,8 +1,21 @@
-# EJAgent Core
+<div align="center">
+  <img src="assets/ejagent-mascot.svg" width="180" alt="从蛋中孵化的 EJAgent 吉祥物">
+  <h1>EJAgent Core</h1>
+  <p><em>孵化属于你的 Agent —— 高度可定制、可持久、可控制的 Python 运行时。</em></p>
+  <p>
+    <a href="https://github.com/jyh20030112/EJAgent/stargazers"><img src="https://img.shields.io/github/stars/jyh20030112/EJAgent" alt="GitHub Stars"></a>
+    <a href="https://pypi.org/project/ejagent-core/"><img src="https://img.shields.io/pypi/v/ejagent-core" alt="PyPI 版本"></a>
+    <a href="https://github.com/jyh20030112/EJAgent/actions/workflows/ci.yml"><img src="https://github.com/jyh20030112/EJAgent/actions/workflows/ci.yml/badge.svg" alt="CI 状态"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT License"></a>
+    <br>
+    <img src="https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python 3.12+">
+    <img src="https://img.shields.io/badge/asyncio-native-4B8BBE" alt="原生 asyncio">
+    <img src="https://img.shields.io/badge/MCP-ready-7C3AED" alt="支持 MCP">
+  </p>
+  <p><a href="README.md">English</a> · <strong>简体中文</strong></p>
+</div>
 
-[English](README.md) | [简体中文](README_zh-CN.md)
-
-构建有状态的 AI Agent，同时保留对运行方式的完整控制。
+---
 
 EJAgent Core 是一个轻量级 Python Agent 运行时，可用于构建能够调用工具、保持对话
 状态、在进程重启后恢复并接受实时控制的 Agent。模型、工具、上下文策略、存储和
@@ -44,14 +57,14 @@ EJAgent Core 为执行、状态、工具和外部副作用提供清晰边界，�
 EJAgent Core 需要 Python 3.12 或更高版本。
 
 ```bash
-pip install ejagent-core
+uv add ejagent-core
 ```
 
-可选集成：
+按需添加可选集成：
 
 ```bash
-pip install 'ejagent-core[anthropic]'
-pip install 'ejagent-core[mcp]'
+uv add 'ejagent-core[anthropic]'  # Anthropic
+uv add 'ejagent-core[mcp]'        # MCP
 ```
 
 ## 快速开始
