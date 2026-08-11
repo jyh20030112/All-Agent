@@ -1,19 +1,27 @@
 .env
 
+.venv/
 __pycache__/
+*.py[cod]
 
-my_skills
+# Python tooling
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
 
-.ruff_cache
+# Local agent and browser tooling
+.claude/
+.codegraph/
+.playwright-mcp/
+AGENTS.md
+my_skills/
 
-.playwright-mcp
-
+# OS metadata
 .DS_Store
 
-.claude
-
-.pytest_cache
-
-AGENTS.md
-.ejagent-sessions
-.simagentplg-sessions
+# Local runtime state
+.ejagent-sessions/
+.simagentplg-sessions/
