@@ -1,6 +1,6 @@
 [project]
 name = "ejagent-core"
-version = "0.6.0"
+version = "0.6.1"
 description = "An OpenAI-first agent harness core for controlled, durable, and observable agent runtimes"
 readme = "README.md"
 license = {file = "LICENSE"}

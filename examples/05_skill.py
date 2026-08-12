@@ -28,7 +28,7 @@ async def main() -> None:
 
     async with harness:
         outcome = await harness.run(
-            "$release_notes Write release notes for EJAgent Core 0.6.0. "
+            "$release_notes Write release notes for EJAgent Core 0.6.1. "
             "Changes: added a runtime kernel, lifecycle harness, and durable store."
         )
         print(outcome.result.output)
