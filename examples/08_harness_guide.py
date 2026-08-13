@@ -191,8 +191,7 @@ async def cmd_controls(store: JsonlSessionStore) -> None:
 
         receipt = harness.steer("Before your final answer, also append the word DONE.")
         print(
-            f"steer during run → {receipt.status.value} "
-            f"(input {receipt.input_id[:8]})"
+            f"steer during run → {receipt.status.value} (input {receipt.input_id[:8]})"
         )
 
         follow_handle = harness.follow_up("Reply with exactly the number 7.")
