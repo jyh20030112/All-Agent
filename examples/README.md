@@ -20,6 +20,8 @@ requests.
 - `05_skill.py`: disposable skill indexing and explicit instruction projection.
 - `06_session_resume.py`: recovery from `MemorySessionStore` in a new Harness.
 - `07_durable_session.py`: cross-process recovery from `JsonlSessionStore`.
+- `08_harness_guide.py`: custom tools, live controls, observers, and durable
+  recovery in one end-to-end walkthrough.
 
 Every `AgentHarness` has one immutable `agent_id`. Tool-enabled Harnesses expose
 only their configured `ToolExecutor.definitions`; plain assistant text completes
@@ -48,3 +50,18 @@ uv run python examples/07_durable_session.py resume
 ```
 
 Conversation recovery and append-only Run Audit are separate Store domains.
+
+The Harness guide walks the full extension surface in three subcommands:
+
+```bash
+uv run python examples/08_harness_guide.py record     # custom tool + durable commit
+uv run python examples/08_harness_guide.py resume     # recover in a new process
+uv run python examples/08_harness_guide.py controls   # steer / follow_up / cancel
+```
+
+`record` commits a Run that calls a custom `add` tool; `resume` reloads the same
+`JsonlSessionStore` in a fresh Harness and recalls the tool result from committed
+Conversation. `controls` injects a `steer()` instruction mid-Run (transient, never
+committed), queues an independent `follow_up()` Run, and cancels a long Run to
+show that failed or cancelled Runs stay auditable without advancing revision. A
+`RunObserver` prints each RunAudit summary after the Store decision.
