@@ -117,14 +117,14 @@ harness = AgentHarness(
 
 ## 每个边界都可以定制
 
-| 想要替换的部分 | 扩展接口 |
-| --- | --- |
-| 模型 Provider 或协议 | `ModelPort` |
-| 本地或远程工具后端 | `ToolExecutor` |
-| 上下文选择与投影策略 | `ContextPipeline` |
-| 长历史摘要方式 | `ContextCompactor` |
-| Session 持久化 | `SessionStore` |
-| 日志、追踪或指标 | `RunObserver` |
+| 想要替换的部分       | 扩展接口           |
+| -------------------- | ------------------ |
+| 模型 Provider 或协议 | `ModelPort`        |
+| 本地或远程工具后端   | `ToolExecutor`     |
+| 上下文选择与投影策略 | `ContextPipeline`  |
+| 长历史摘要方式       | `ContextCompactor` |
+| Session 持久化       | `SessionStore`     |
+| 日志、追踪或指标     | `RunObserver`      |
 
 这些接口保持精简并且不绑定 Provider。只需实现应用真正需要的部分，再与内置运行时
 组合即可。
@@ -151,7 +151,7 @@ EJAgent Core 专注于单个逻辑 Agent。应用可以在它的外层按需构�
 - [Kernel–Harness 设计](docs/runtime-kernel-harness-design.md)：规范性的架构边界与
   不变量。
 - [可运行示例](examples/README.md)：聊天、工具、MCP、Skill、恢复和持久 Session
-  示例。
+  示例
 
 ## 开发
 
