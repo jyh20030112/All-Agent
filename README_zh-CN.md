@@ -141,7 +141,7 @@ harness = AgentHarness(
 - 基于 Revision、支持幂等和跨进程文件锁的 Session 提交
 
 EJAgent Core 专注于单个逻辑 Agent。应用可以在它的外层按需构建多 Agent 编排和
-任意时刻暂停/恢复能力
+任意时刻暂停/恢复能力。
 
 ## 文档
 
