@@ -24,7 +24,7 @@ replaceable, so you can adapt the runtime to your application instead of
 adapting your application to a framework.
 
 Use it as the foundation for assistants, workflow agents, coding tools,
-research agents, or any application that needs a reliable model–tool loop.
+research agents, or any application that needs a reliable model–tool loop
 
 ## What You Can Build
 
@@ -122,14 +122,14 @@ harness = AgentHarness(
 
 ## Customize Every Boundary
 
-| You want to change | Extension point |
-| --- | --- |
-| Model provider or protocol | `ModelPort` |
-| Local or remote tool backend | `ToolExecutor` |
-| Context selection and projection | `ContextPipeline` |
-| Long-history summarization | `ContextCompactor` |
-| Session persistence | `SessionStore` |
-| Logging, tracing, or metrics | `RunObserver` |
+| You want to change               | Extension point    |
+| -------------------------------- | ------------------ |
+| Model provider or protocol       | `ModelPort`        |
+| Local or remote tool backend     | `ToolExecutor`     |
+| Context selection and projection | `ContextPipeline`  |
+| Long-history summarization       | `ContextCompactor` |
+| Session persistence              | `SessionStore`     |
+| Logging, tracing, or metrics     | `RunObserver`      |
 
 These are narrow, provider-neutral contracts. Implement only the part your
 application needs, then compose it with the built-in runtime.
