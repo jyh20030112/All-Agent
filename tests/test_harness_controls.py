@@ -22,7 +22,6 @@ from ejagent.contracts import (
     ToolDefinition,
     ToolExecutionResult,
     ToolExecutor,
-    ToolSemantics,
     TransientInstruction,
     UserMessage,
 )
@@ -30,7 +29,6 @@ from ejagent.harness import (
     AgentHarness,
     FollowUpDiscardedError,
     FollowUpRejectedError,
-    MemorySessionStore,
 )
 
 
@@ -87,7 +85,6 @@ class BlockingTools(ToolExecutor):
         return (
             ToolDefinition(
                 name="wait",
-                semantics=ToolSemantics.read_only(),
             ),
         )
 
@@ -123,8 +120,31 @@ class FailingObserver:
         raise RuntimeError("observer unavailable")
 
 
+class RecordingStore:
+    def __init__(self) -> None:
+        self.snapshot: SessionSnapshot | None = None
+
+    async def load(self, agent_id: str) -> SessionSnapshot | None:
+        return self.snapshot
+
+    async def commit(self, commit: SessionCommit) -> SessionSnapshot:
+        current = self.snapshot
+        self.snapshot = SessionSnapshot(
+            agent_id=commit.agent_id,
+            conversation=commit.resulting_conversation,
+            last_result=(
+                commit.outcome.result
+                if commit.advances_revision
+                else current.last_result
+                if current is not None
+                else None
+            ),
+        )
+        return self.snapshot
+
+
 class StoreCheckingObserver:
-    def __init__(self, store: MemorySessionStore) -> None:
+    def __init__(self, store: RecordingStore) -> None:
         self.store = store
         self.called = asyncio.Event()
         self.persisted_revision: int | None = None
@@ -135,7 +155,7 @@ class StoreCheckingObserver:
         self.called.set()
 
 
-class BlockingCommitStore(MemorySessionStore):
+class BlockingCommitStore(RecordingStore):
     def __init__(self) -> None:
         super().__init__()
         self.started = asyncio.Event()
@@ -175,12 +195,10 @@ class HarnessControlTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
         tools = BlockingTools()
-        store = MemorySessionStore()
         harness = AgentHarness(
             agent_id="steered-agent",
             model=model,
             tools=tools,
-            store=store,
             run_id_factory=lambda: "steered-run",
         )
         running = asyncio.create_task(harness.run("original task"))
@@ -209,10 +227,6 @@ class HarnessControlTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(applied[0].payload["input_id"], receipt.input_id)
         self.assertEqual(applied[0].payload["turn"], 2)
-        durable = await store.load_audit("steered-agent")
-        self.assertIn(
-            "steering_applied", [record.kind for record in durable[0].records]
-        )
 
     async def test_steering_without_another_safe_point_is_audited_as_discarded(
         self,
@@ -425,7 +439,7 @@ class HarnessControlTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_observer_failure_cannot_change_run_or_commit(self) -> None:
         observer = FailingObserver()
-        store = MemorySessionStore()
+        store = RecordingStore()
         harness = AgentHarness(
             agent_id="failing-observer",
             model=ScriptedModel([AssistantMessage(content="done")]),
@@ -446,7 +460,7 @@ class HarnessControlTests(unittest.IsolatedAsyncioTestCase):
         await harness.shutdown()
 
     async def test_observer_runs_after_store_decision(self) -> None:
-        store = MemorySessionStore()
+        store = RecordingStore()
         observer = StoreCheckingObserver(store)
         harness = AgentHarness(
             agent_id="observed-agent",

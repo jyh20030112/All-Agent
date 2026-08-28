@@ -8,7 +8,6 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
 
 from ejagent.contracts import (
     AssistantMessage,
@@ -22,10 +21,8 @@ from ejagent.contracts import (
     RunPhase,
     RunResult,
     RunStatus,
-    RunUsage,
     SessionCommit,
     SessionConflictError,
-    SessionMigrationError,
     SessionSnapshot,
     SessionStore,
     SessionStoreSerializationError,
@@ -35,143 +32,13 @@ from ejagent.contracts import (
     ToolResultMessage,
     UserMessage,
 )
-from ejagent.harness import MemorySessionStore
 from ejagent.storage import JsonlSessionStore
-from ejagent.storage._legacy import (
-    LegacyRun,
-    LegacyRunResult,
-    LegacySessionData,
-)
 from ejagent.storage.codec import (
     session_commit_from_dict,
     session_commit_to_dict,
 )
-from ejagent.storage.migration import migrate_legacy_session
 
 _NOW = datetime(2026, 8, 1, 8, 30, tzinfo=UTC)
-
-
-def _legacy_result(*, output: str | None = None) -> LegacyRunResult:
-    return LegacyRunResult(
-        status=RunStatus.COMPLETED,
-        stop_reason=StopReason.TEXT_RESPONSE,
-        turns=2,
-        output=output,
-        error=None,
-        usage=RunUsage(),
-    )
-
-
-def _write_legacy_checkpoint(
-    root: Path,
-    *,
-    session_id: str,
-    agent_id: str,
-    messages: list[dict[str, Any]],
-    run_id: str,
-    output: str | None,
-) -> None:
-    usage = RunUsage().to_dict()
-    document = {
-        "schema_version": 1,
-        "session": {
-            "session_id": session_id,
-            "agent_id": agent_id,
-            "entries": [
-                {"run_id": run_id, "sequence": index + 1, "message": message}
-                for index, message in enumerate(messages)
-            ],
-            "runs": [
-                {
-                    "run_id": run_id,
-                    "task": messages[0]["content"],
-                    "intent": "task",
-                    "start_sequence": 1,
-                    "finish_sequence": len(messages) + 1,
-                    "result": {
-                        "status": "completed",
-                        "stop_reason": "text_response",
-                        "turns": 2,
-                        "output": output,
-                        "error": None,
-                        "usage": usage,
-                    },
-                }
-            ],
-            "compactions": [],
-        },
-    }
-    record = {
-        "journal_schema_version": 1,
-        "record_id": "legacy-checkpoint",
-        "parent_id": None,
-        "branch_id": "main",
-        "revision": 1,
-        "session_id": session_id,
-        "agent_id": agent_id,
-        "sequence": 0,
-        "type": "checkpoint",
-        "data": {"document": document},
-    }
-    digest = sha256(session_id.encode("utf-8")).hexdigest()
-    (root / f"{digest}.jsonl").write_text(
-        json.dumps(record, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-
-
-def _write_legacy_event_journal(root: Path) -> None:
-    usage = RunUsage().to_dict()
-    drafts = (
-        ("run_started", 1, {"run_id": "event-run", "task": "remember blue"}),
-        (
-            "message_appended",
-            2,
-            {
-                "run_id": "event-run",
-                "message": {"role": "assistant", "content": "noted"},
-            },
-        ),
-        (
-            "run_finished",
-            3,
-            {
-                "run_id": "event-run",
-                "result": {
-                    "status": "completed",
-                    "stop_reason": "text_response",
-                    "turns": 1,
-                    "output": "noted",
-                    "error": None,
-                    "usage": usage,
-                },
-            },
-        ),
-    )
-    records: list[dict[str, Any]] = []
-    parent_id: str | None = None
-    for revision, (kind, sequence, data) in enumerate(drafts, start=1):
-        record_id = f"record-{revision}"
-        records.append(
-            {
-                "journal_schema_version": 1,
-                "record_id": record_id,
-                "parent_id": parent_id,
-                "branch_id": "main",
-                "revision": revision,
-                "session_id": "event-session",
-                "agent_id": "event-agent",
-                "sequence": sequence,
-                "type": kind,
-                "data": data,
-            }
-        )
-        parent_id = record_id
-    digest = sha256(b"event-session").hexdigest()
-    (root / f"{digest}.jsonl").write_text(
-        "".join(json.dumps(record) + "\n" for record in records),
-        encoding="utf-8",
-    )
 
 
 class _ContractStore(SessionStore, AuditReader):
@@ -302,13 +169,6 @@ class _SessionStoreContract:
         )
 
 
-class MemorySessionStoreContractTests(
-    _SessionStoreContract,
-    unittest.IsolatedAsyncioTestCase,
-):
-    store_factory = MemorySessionStore
-
-
 class JsonlSessionStoreContractTests(
     _SessionStoreContract,
     unittest.IsolatedAsyncioTestCase,
@@ -429,114 +289,3 @@ class JsonlSessionStoreTests(unittest.IsolatedAsyncioTestCase):
             sum(isinstance(item, SessionConflictError) for item in results),
             1,
         )
-
-    async def test_auto_migrates_legacy_jsonl_once(self) -> None:
-        _write_legacy_checkpoint(
-            self.root,
-            session_id="legacy-session",
-            agent_id="legacy-agent",
-            run_id="legacy-run",
-            output="已记住",
-            messages=[
-                {"role": "user", "content": "记住 café"},
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": "call-1",
-                            "type": "function",
-                            "function": {
-                                "name": "remember",
-                                "arguments": '{"text":"你好"}',
-                            },
-                        }
-                    ],
-                },
-                {"role": "tool", "tool_call_id": "call-1", "content": "ok"},
-                {"role": "assistant", "content": "已记住"},
-            ],
-        )
-
-        migrating = JsonlSessionStore(
-            self.root,
-            legacy_session_id="legacy-session",
-        )
-        snapshot = await migrating.load("legacy-agent")
-
-        self.assertIsNotNone(snapshot)
-        assert snapshot is not None
-        self.assertEqual(snapshot.revision, 1)
-        self.assertEqual(snapshot.messages[0], UserMessage("记住 café"))
-        self.assertEqual(
-            snapshot.messages[1],
-            AssistantMessage(
-                tool_calls=(
-                    ToolCall(
-                        id="call-1",
-                        name="remember",
-                        arguments={"text": "你好"},
-                    ),
-                )
-            ),
-        )
-        self.assertEqual(
-            snapshot.messages[2],
-            ToolResultMessage(
-                tool_call_id="call-1",
-                tool_name="remember",
-                result="ok",
-            ),
-        )
-        self.assertEqual(len(await migrating.load_audit("legacy-agent")), 1)
-        self.assertEqual(
-            await JsonlSessionStore(self.root).load("legacy-agent"),
-            snapshot,
-        )
-        self.assertEqual(len(tuple(self.root.glob("*.core.jsonl"))), 1)
-
-    async def test_migrates_event_journal_without_legacy_runtime(self) -> None:
-        _write_legacy_event_journal(self.root)
-        store = JsonlSessionStore(
-            self.root,
-            legacy_session_id="event-session",
-        )
-
-        snapshot = await store.load("event-agent")
-
-        self.assertIsNotNone(snapshot)
-        assert snapshot is not None
-        self.assertEqual(
-            snapshot.messages,
-            (UserMessage("remember blue"), AssistantMessage("noted")),
-        )
-        self.assertEqual(snapshot.revision, 1)
-        self.assertEqual(snapshot.last_result.output, "noted")  # type: ignore[union-attr]
-
-    async def test_migration_errors_are_actionable(self) -> None:
-        unfinished = LegacySessionData(
-            session_id="unfinished",
-            agent_id="agent-1",
-            entries=({"role": "user", "content": "work"},),
-            runs=(LegacyRun("run-open"),),
-        )
-
-        with self.assertRaises(SessionMigrationError) as raised:
-            migrate_legacy_session(unfinished)
-
-        self.assertIn("unfinished", str(raised.exception))
-        self.assertIn("Remediation:", str(raised.exception))
-        self.assertTrue(raised.exception.remediation)
-
-        unsupported = LegacySessionData(
-            session_id="unsupported",
-            agent_id="agent-1",
-            entries=(
-                {"role": "user", "content": "work"},
-                {"role": "developer", "content": "hidden"},
-            ),
-            runs=(LegacyRun("run-1", _legacy_result()),),
-        )
-        with self.assertRaises(SessionMigrationError) as unsupported_error:
-            migrate_legacy_session(unsupported)
-        self.assertIn("unsupported", str(unsupported_error.exception))

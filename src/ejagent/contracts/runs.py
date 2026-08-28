@@ -90,8 +90,6 @@ class RunLimits:
     max_turns: int = 20
     max_tokens: int | None = None
     max_repeated_tool_calls: int = 3
-    parallel_tool_calls: bool = False
-    max_parallel_tool_calls: int | None = None
 
     def __post_init__(self) -> None:
         _positive_integer(self.max_turns, "max_turns")
@@ -101,13 +99,6 @@ class RunLimits:
         )
         if self.max_tokens is not None:
             _positive_integer(self.max_tokens, "max_tokens")
-        if not isinstance(self.parallel_tool_calls, bool):
-            raise TypeError("parallel_tool_calls must be a boolean")
-        if self.max_parallel_tool_calls is not None:
-            _positive_integer(
-                self.max_parallel_tool_calls,
-                "max_parallel_tool_calls",
-            )
 
 
 @dataclass(frozen=True, slots=True)

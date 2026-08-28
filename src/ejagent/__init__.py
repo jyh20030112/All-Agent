@@ -5,7 +5,7 @@ from ejagent.context import (
     IdentityContextPipeline,
     SkillsContextPipeline,
 )
-from ejagent.harness import AgentHarness, MemorySessionStore
+from ejagent.harness import AgentHarness
 from ejagent.kernel import RuntimeKernel
 from ejagent.providers import (
     AnthropicConfig,
@@ -33,7 +33,6 @@ __all__ = [
     "IdentityContextPipeline",
     "JsonlSessionStore",
     "McpToolExecutor",
-    "MemorySessionStore",
     "ModelConfig",
     "OpenAIModelPort",
     "RuntimeKernel",

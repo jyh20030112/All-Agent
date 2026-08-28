@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -283,26 +284,33 @@ class RuntimeKernel:
                                 ),
                             ),
                         )
-                    execution = await self._execute_tool(
-                        call,
-                        known=call.name in tool_names,
-                        cancellation=token,
-                        audit=audit,
-                        turn=turn,
-                    )
+                executions = await self._execute_tools(
+                    message.tool_calls,
+                    tool_names=tool_names,
+                    cancellation=token,
+                    audit=audit,
+                    turn=turn,
+                )
+                terminal: ToolExecutionResult | None = None
+                for call, execution in zip(message.tool_calls, executions, strict=True):
                     workspace.append_tool_result(
                         call,
                         result=execution.result,
                         is_error=execution.is_error,
                     )
-                    if execution.control is not ToolControl.CONTINUE:
-                        audit.append("turn_completed", {"turn": turn})
-                        return self._tool_terminal(
-                            workspace,
-                            usage,
-                            audit,
-                            execution,
-                        )
+                    if (
+                        terminal is None
+                        and execution.control is not ToolControl.CONTINUE
+                    ):
+                        terminal = execution
+                if terminal is not None:
+                    audit.append("turn_completed", {"turn": turn})
+                    return self._tool_terminal(
+                        workspace,
+                        usage,
+                        audit,
+                        terminal,
+                    )
                 audit.append("turn_completed", {"turn": turn})
 
             return self._failed(
@@ -534,6 +542,38 @@ class RuntimeKernel:
             },
         )
         return execution
+
+    async def _execute_tools(
+        self,
+        calls: tuple[ToolCall, ...],
+        *,
+        tool_names: set[str],
+        cancellation: CancellationToken,
+        audit: _AuditTrail,
+        turn: int,
+    ) -> tuple[ToolExecutionResult, ...]:
+        """Execute one model-produced Tool batch concurrently."""
+
+        tasks = tuple(
+            asyncio.create_task(
+                self._execute_tool(
+                    call,
+                    known=call.name in tool_names,
+                    cancellation=cancellation,
+                    audit=audit,
+                    turn=turn,
+                )
+            )
+            for call in calls
+        )
+        try:
+            return tuple(await asyncio.gather(*tasks))
+        except BaseException:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
     def _tool_terminal(
         self,

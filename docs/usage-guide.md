@@ -210,8 +210,8 @@ outcome = await harness.run(
 单次 `limits` 覆盖 Harness 默认值。`metadata` 必须是 JSON-compatible 对象，会传入
 Context 并出现在相关 Audit 中。`configuration_revision` 是审计标签，不会动态加载配置。
 
-`parallel_tool_calls` 和 `max_parallel_tool_calls` 当前只是预留字段；工具仍按模型返回
-顺序执行。
+同一模型响应中的多个工具调用始终并发执行。所有调用完成后，结果按模型给出的顺序
+进入 Conversation；当前没有串行模式或并发数量开关。
 
 ## 6. 使用 Function Tool
 
@@ -223,7 +223,6 @@ from ejagent.contracts import (
     ToolCall,
     ToolDefinition,
     ToolExecutionResult,
-    ToolSemantics,
 )
 from ejagent.tools import FunctionTool, FunctionToolExecutor
 
@@ -238,7 +237,6 @@ ADD = ToolDefinition(
         },
         "required": ["left", "right"],
     },
-    semantics=ToolSemantics.read_only(),
 )
 
 
@@ -297,7 +295,7 @@ ToolExecutionResult({"reason": "stopped"}, control=ToolControl.CANCEL)
 from ejagent.tools import CompositeToolExecutor, McpToolExecutor
 
 local_tools = FunctionToolExecutor((FunctionTool(ADD, add),))
-mcp_tools = McpToolExecutor("examples/mcp_config.json")
+mcp_tools = McpToolExecutor("mcp_config.json")
 tools = CompositeToolExecutor((local_tools, mcp_tools))
 
 harness = AgentHarness(
@@ -325,20 +323,13 @@ Composite 会管理子 executor 的生命周期并按工具名路由。任意重
 ```
 
 ```python
-from ejagent.contracts import ToolSemantics
 from ejagent.tools import McpToolExecutor
 
-tools = McpToolExecutor(
-    "examples/mcp_config.json",
-    semantics={
-        "playwright__browser_snapshot": ToolSemantics.read_only(),
-    },
-)
+tools = McpToolExecutor("mcp_config.json")
 ```
 
-MCP 工具在 Core 中使用 `service__tool` 名称。`semantics` 的 key 必须使用这个完整
-名称，并且只能引用启动后实际发现的工具。单个 MCP service 启动失败会被记录并跳过；
-启动后可检查 `tools.definitions`。
+MCP 工具在 Core 中使用 `service__tool` 名称。单个 MCP service 启动失败会被记录并
+跳过；启动后可检查 `tools.definitions`。
 
 测试或自定义传输可以注入满足 `McpManager` Protocol 的 `manager=`；`config_path` 和
 `manager` 必须且只能提供一个。
@@ -463,39 +454,12 @@ full_text = catalog.build_skill_context_content(selected.name)
 
 `discover()` 每个 Catalog 实例只扫描一次；需要刷新文件时重建 Catalog。
 
-## 10. Memory Session 和恢复
+## 10. 临时 Session
 
-```python
-from ejagent.harness import MemorySessionStore
+省略 `store` 时，Harness 在自身生命周期内维护 Conversation 和 revision。这种模式
+不会持久化 Audit，也不能由另一个 Harness 恢复，适合无状态请求和短期任务。
 
-store = MemorySessionStore()
-model_one = OpenAIModelPort(ModelConfig.from_env())
-model_two = OpenAIModelPort(ModelConfig.from_env())
-
-first = AgentHarness(
-    agent_id="same-agent",
-    model=model_one,
-    tools=FunctionToolExecutor(),
-    store=store,
-    initial_messages=(SystemMessage("记住用户事实。"),),
-)
-async with first:
-    await first.run("代号是 CORE-2048。")
-
-second = AgentHarness(
-    agent_id="same-agent",
-    model=model_two,
-    tools=FunctionToolExecutor(),
-    store=store,
-)
-async with second:
-    outcome = await second.run("代号是什么？")
-```
-
-恢复依赖同一个 Store 和完全相同的 `agent_id`。Store 已有 snapshot 时，新的
-`initial_messages` 会被已有 Conversation 替换。Memory Store 只在当前进程有效。
-
-## 11. JSONL 持久化、Audit 与迁移
+## 11. JSONL 持久化与 Audit
 
 ```python
 from ejagent.storage import JsonlSessionStore
@@ -519,29 +483,6 @@ for audit in audits:
     for record in audit.records:
         print(record.sequence, record.kind, record.payload)
 ```
-
-显式迁移旧 Session：
-
-```python
-snapshot = await store.migrate_legacy(
-    "same-agent",
-    session_id="old-session-id",
-    root=".simagentplg-sessions",
-)
-```
-
-或在第一次 `load()` 时自动迁移：
-
-```python
-store = JsonlSessionStore(
-    ".ejagent-sessions",
-    legacy_session_id="old-session-id",
-    legacy_root=".simagentplg-sessions",
-)
-```
-
-迁移是一次性的。目标 Agent 已有不同状态、旧 Run 未完成或旧消息不能无损表示时，
-会抛 `SessionMigrationError`；可读取其 `remediation`。
 
 ## 12. CONTINUE、取消、Steering 和 Follow-up
 
@@ -733,46 +674,20 @@ Kernel 不启动资源、不读取或写入 Store，也不会提交 `outcome.del
 
 - 一个 `AgentHarness` 只代表一个逻辑 Agent，不管理多 Agent。
 - 不支持真正暂停并序列化一个正在执行的 Run；`continue_run()` 是新 Run。
-- 多个 Run 会被 Harness 串行化，多个 tool calls 当前也顺序执行。
-- `ToolSemantics` 已记录 effect、幂等和 concurrency key，但调度策略尚未消费它们。
+- 多个 Run 会被 Harness 串行化；同一模型响应中的 tool calls 始终并发执行。
 - `RunPolicy` 尚未成为可注入实现；限制和终止逻辑目前在 Kernel 内。
 - Harness 会消费 Provider streaming，但当前只把 delta 写入 Audit，不向 `run()` 调用方
   实时推送。调用方只能在 Run 完成后读取 outcome。
 - `DerivedCompactionPipeline` 只生成派生视图，不减少 durable journal 大小。
-- `MemorySessionStore` 不能跨进程；`JsonlSessionStore` 的跨进程文件锁要求 POSIX。
+- 省略 Store 时状态不能跨 Harness 恢复；`JsonlSessionStore` 的跨进程文件锁要求 POSIX。
 - MCP 单个 service 失败会被跳过；不要把“Harness 成功启动”等同于“所有 MCP 服务
   都可用”。
 
-## 17. 示例与验证
-
-| 示例 | 功能 |
-| --- | --- |
-| `examples/01_stateful_chat.py` | 多次 Run 的 Conversation。 |
-| `examples/02_custom_tool.py` | Function Tool 和 `COMPLETE`。 |
-| `examples/03_anthropic_chat.py` | Anthropic Provider。 |
-| `examples/04_mcp_tools.py` | MCP ToolExecutor。 |
-| `examples/05_skill.py` | Skills ContextPipeline。 |
-| `examples/06_session_resume.py` | Memory Store 恢复。 |
-| `examples/07_durable_session.py` | JSONL 跨进程恢复和 Audit。 |
-
-运行示例：
+## 17. 验证
 
 ```bash
-uv run python examples/01_stateful_chat.py
-uv run python examples/02_custom_tool.py
-uv run python examples/03_anthropic_chat.py
-uv run python examples/04_mcp_tools.py
-uv run python examples/05_skill.py
-uv run python examples/06_session_resume.py
-uv run python examples/07_durable_session.py record
-uv run python examples/07_durable_session.py resume
-```
-
-运行项目验证：
-
-```bash
-uv run ruff check src tests examples benchmarks
-uv run ruff format --check src tests examples benchmarks
+uv run ruff check src tests benchmarks
+uv run ruff format --check src tests benchmarks
 uv run mypy
 uv run python -m unittest discover -s tests -p 'test*.py' -q
 uv build

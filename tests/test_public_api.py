@@ -18,7 +18,6 @@ class PublicApiTests(unittest.TestCase):
             "IdentityContextPipeline",
             "JsonlSessionStore",
             "McpToolExecutor",
-            "MemorySessionStore",
             "ModelConfig",
             "OpenAIModelPort",
             "RuntimeKernel",

@@ -15,23 +15,16 @@ from ejagent.contracts.audit import AuditReader, RunAudit
 from ejagent.contracts.session import (
     SessionCommit,
     SessionConflictError,
-    SessionMigrationError,
     SessionSnapshot,
     SessionStore,
     SessionStoreError,
     SessionStoreSerializationError,
 )
 from ejagent.storage._file_lock import StoreFileLock
-from ejagent.storage._legacy import load_legacy_session
 from ejagent.storage.codec import (
-    run_audit_from_dict,
-    run_audit_to_dict,
     session_commit_from_dict,
     session_commit_to_dict,
-    session_snapshot_from_dict,
-    session_snapshot_to_dict,
 )
-from ejagent.storage.migration import LegacySessionMigration, migrate_legacy_session
 
 STORE_SCHEMA_VERSION = 1
 _ResultT = TypeVar("_ResultT")
@@ -42,13 +35,12 @@ class _StoreIndex:
     snapshot: SessionSnapshot | None
     audit: list[RunAudit]
     commits: dict[str, tuple[SessionCommit, SessionSnapshot]]
-    known_run_ids: set[str]
     record_count: int = 0
     valid_length: int = 0
 
     @classmethod
     def empty(cls) -> _StoreIndex:
-        return cls(None, [], {}, set())
+        return cls(None, [], {})
 
 
 class JsonlSessionStore(SessionStore, AuditReader):
@@ -59,8 +51,6 @@ class JsonlSessionStore(SessionStore, AuditReader):
         root: str | Path,
         *,
         lock_timeout: float | None = 10.0,
-        legacy_session_id: str | None = None,
-        legacy_root: str | Path | None = None,
     ) -> None:
         if lock_timeout is not None:
             if isinstance(lock_timeout, bool) or not isinstance(
@@ -70,16 +60,8 @@ class JsonlSessionStore(SessionStore, AuditReader):
             if lock_timeout < 0 or not math.isfinite(lock_timeout):
                 raise ValueError("lock_timeout must be finite and non-negative")
             lock_timeout = float(lock_timeout)
-        if legacy_session_id is not None:
-            if not isinstance(legacy_session_id, str) or not legacy_session_id.strip():
-                raise ValueError("legacy_session_id must not be empty")
-            legacy_session_id = legacy_session_id.strip()
         self.root = Path(root).expanduser()
         self.lock_timeout = lock_timeout
-        self.legacy_session_id = legacy_session_id
-        self.legacy_root = (
-            Path(legacy_root).expanduser() if legacy_root is not None else self.root
-        )
         self._lock = asyncio.Lock()
 
     async def load(self, agent_id: str) -> SessionSnapshot | None:
@@ -87,22 +69,7 @@ class JsonlSessionStore(SessionStore, AuditReader):
         path = self._path_for(normalized)
         async with self._lock:
             index = await self._read_index(path, normalized)
-            if index.snapshot is not None or self.legacy_session_id is None:
-                return index.snapshot
-            migration = await self._decode_legacy(
-                normalized,
-                session_id=self.legacy_session_id,
-                root=self.legacy_root,
-            )
-            if migration is None:
-                return None
-            return await self._run_locked(
-                path,
-                self._seed_sync,
-                path,
-                normalized,
-                migration,
-            )
+            return index.snapshot
 
     async def commit(self, commit: SessionCommit) -> SessionSnapshot:
         if not isinstance(commit, SessionCommit):
@@ -120,70 +87,10 @@ class JsonlSessionStore(SessionStore, AuditReader):
 
     async def load_audit(self, agent_id: str) -> tuple[RunAudit, ...]:
         normalized = self._normalize_agent_id(agent_id)
-        if self.legacy_session_id is not None:
-            await self.load(normalized)
         path = self._path_for(normalized)
         async with self._lock:
             index = await self._read_index(path, normalized)
             return tuple(index.audit)
-
-    async def migrate_legacy(
-        self,
-        agent_id: str,
-        *,
-        session_id: str,
-        root: str | Path | None = None,
-    ) -> SessionSnapshot:
-        """Explicitly import one legacy JSONL Session projection once."""
-
-        normalized = self._normalize_agent_id(agent_id)
-        session_id = session_id.strip()
-        if not session_id:
-            raise ValueError("session_id must not be empty")
-        source_root = self._expand_root(root) if root is not None else self.legacy_root
-        migration = await self._decode_legacy(
-            normalized,
-            session_id=session_id,
-            root=source_root,
-        )
-        if migration is None:
-            raise SessionMigrationError(
-                f"legacy Session {session_id!r} does not exist in {source_root}",
-                remediation="verify the legacy root and session_id",
-            )
-        path = self._path_for(normalized)
-        async with self._lock:
-            return await self._run_locked(
-                path,
-                self._seed_sync,
-                path,
-                normalized,
-                migration,
-            )
-
-    async def _decode_legacy(
-        self,
-        agent_id: str,
-        *,
-        session_id: str,
-        root: Path,
-    ) -> LegacySessionMigration | None:
-        try:
-            session = await asyncio.to_thread(
-                load_legacy_session,
-                root,
-                session_id,
-            )
-        except SessionMigrationError:
-            raise
-        except Exception as exc:
-            raise SessionMigrationError(
-                f"failed to decode legacy Session {session_id!r}: {exc}",
-                remediation="repair or export the legacy journal before migration",
-            ) from exc
-        if session is None:
-            return None
-        return migrate_legacy_session(session, agent_id=agent_id)
 
     def _commit_sync(
         self,
@@ -199,11 +106,6 @@ class JsonlSessionStore(SessionStore, AuditReader):
                     f"run_id {commit.run_id!r} already identifies a different commit"
                 )
             return snapshot
-        if commit.run_id in index.known_run_ids:
-            raise SessionConflictError(
-                f"run_id {commit.run_id!r} already exists in migrated Audit"
-            )
-
         current = index.snapshot
         if current is None:
             if commit.base_revision != 0:
@@ -224,36 +126,6 @@ class JsonlSessionStore(SessionStore, AuditReader):
         )
         self._write_record_sync(path, record, index.valid_length)
         return snapshot
-
-    def _seed_sync(
-        self,
-        path: Path,
-        agent_id: str,
-        migration: LegacySessionMigration,
-    ) -> SessionSnapshot:
-        index = self._read_sync(path, agent_id)
-        if index.snapshot is not None:
-            if (
-                index.snapshot == migration.snapshot
-                and tuple(index.audit) == migration.audit
-            ):
-                return index.snapshot
-            raise SessionConflictError(
-                f"agent {agent_id!r} already has durable Core state"
-            )
-        record = self._record(
-            sequence=1,
-            agent_id=agent_id,
-            kind="legacy_seed",
-            data={
-                "source_session_id": migration.source_session_id,
-                "snapshot": session_snapshot_to_dict(migration.snapshot),
-                "audit": [run_audit_to_dict(item) for item in migration.audit],
-            },
-        )
-        self._validate_json(record, label="legacy migration")
-        self._write_record_sync(path, record, index.valid_length)
-        return migration.snapshot
 
     async def _read_index(self, path: Path, agent_id: str) -> _StoreIndex:
         return await self._run_worker(self._read_locked_sync, path, agent_id)
@@ -365,54 +237,6 @@ class JsonlSessionStore(SessionStore, AuditReader):
     ) -> None:
         kind = record["type"]
         data = record["data"]
-        if kind == "legacy_seed":
-            if index.record_count != 0 or index.snapshot is not None:
-                raise SessionStoreSerializationError(
-                    f"legacy seed must be the first record at {path}:{line_number}"
-                )
-            snapshot = session_snapshot_from_dict(data.get("snapshot"))
-            if snapshot.agent_id != record["agent_id"]:
-                raise SessionStoreSerializationError(
-                    f"legacy seed agent mismatch at {path}:{line_number}"
-                )
-            raw_audit = data.get("audit")
-            if not isinstance(raw_audit, list):
-                raise SessionStoreSerializationError(
-                    f"legacy seed audit must be an array at {path}:{line_number}"
-                )
-            audit = tuple(
-                run_audit_from_dict(
-                    item,
-                    label=f"legacy_seed.audit[{audit_index}]",
-                )
-                for audit_index, item in enumerate(raw_audit)
-            )
-            run_ids = [item.run_id for item in audit]
-            if len(run_ids) != len(set(run_ids)):
-                raise SessionStoreSerializationError(
-                    f"legacy seed repeats run_id at {path}:{line_number}"
-                )
-            expected_revision = 0
-            for item in audit:
-                if item.base_revision != expected_revision:
-                    raise SessionStoreSerializationError(
-                        f"legacy seed Audit revisions are discontinuous "
-                        f"at {path}:{line_number}"
-                    )
-                expected_revision = item.resulting_revision
-            if audit:
-                if audit[-1].resulting_revision != snapshot.revision:
-                    raise SessionStoreSerializationError(
-                        f"legacy seed revision mismatch at {path}:{line_number}"
-                    )
-            elif snapshot.revision != 0:
-                raise SessionStoreSerializationError(
-                    f"legacy seed has revision without Audit at {path}:{line_number}"
-                )
-            index.snapshot = snapshot
-            index.audit.extend(audit)
-            index.known_run_ids.update(run_ids)
-            return
         if kind != "commit":
             raise SessionStoreSerializationError(
                 f"unsupported record type {kind!r} at {path}:{line_number}"
@@ -422,7 +246,7 @@ class JsonlSessionStore(SessionStore, AuditReader):
             raise SessionStoreSerializationError(
                 f"commit agent mismatch at {path}:{line_number}"
             )
-        if commit.run_id in index.known_run_ids:
+        if commit.run_id in index.commits:
             raise SessionStoreSerializationError(
                 f"SessionStore repeats run_id {commit.run_id!r} at {path}:{line_number}"
             )
@@ -446,7 +270,6 @@ class JsonlSessionStore(SessionStore, AuditReader):
         index.snapshot = snapshot
         index.audit.append(commit.audit)
         index.commits[commit.run_id] = (commit, snapshot)
-        index.known_run_ids.add(commit.run_id)
 
     @staticmethod
     def _validate_base(current: SessionSnapshot, commit: SessionCommit) -> None:
@@ -590,10 +413,6 @@ class JsonlSessionStore(SessionStore, AuditReader):
         if not agent_id.strip():
             raise ValueError("agent_id must not be empty")
         return agent_id
-
-    @staticmethod
-    def _expand_root(root: str | Path) -> Path:
-        return Path(root).expanduser()
 
     def _path_for(self, agent_id: str) -> Path:
         digest = sha256(agent_id.encode("utf-8")).hexdigest()

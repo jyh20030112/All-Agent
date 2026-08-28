@@ -135,7 +135,8 @@ harness = AgentHarness(
 - Python 函数工具、组合工具执行器和 MCP 工具
 - 本地 Skill 发现与显式 Skill 激活
 - 不改写对话历史的派生上下文摘要
-- 内存 Session 与持久化 JSONL Session
+- 进程内临时 Session 与持久化 JSONL Session
+- 工具并发执行，同时保持 Conversation 顺序确定
 - 协作式取消、实时 Steering 和 FIFO Follow-up
 - 结构化 Audit 与统一的 token 用量统计
 - 基于 Revision、支持幂等和跨进程文件锁的 Session 提交
@@ -150,15 +151,13 @@ EJAgent Core 专注于单个逻辑 Agent。应用可以在它的外层按需构�
   生命周期。
 - [Kernel–Harness 设计](docs/runtime-kernel-harness-design.md)：规范性的架构边界与
   不变量。
-- [可运行示例](examples/README.md)：聊天、工具、MCP、Skill、恢复和持久 Session
-  示例
 
 ## 开发
 
 ```bash
 uv sync --locked --all-extras --group dev
-uv run ruff check src tests examples benchmarks
-uv run ruff format --check src tests examples benchmarks
+uv run ruff check src tests benchmarks
+uv run ruff format --check src tests benchmarks
 uv run mypy
 uv run python -m unittest discover -s tests -p 'test*.py' -q
 uv build

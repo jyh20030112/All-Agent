@@ -140,7 +140,8 @@ application needs, then compose it with the built-in runtime.
 - Python function tools, composite tool executors, and MCP tools
 - Local Skill discovery and explicit Skill activation
 - Derived context compaction without rewriting conversation history
-- In-memory sessions and durable JSONL sessions
+- Ephemeral in-process sessions and durable JSONL sessions
+- Concurrent Tool execution with deterministic Conversation ordering
 - Cooperative cancellation, live steering, and FIFO follow-ups
 - Structured audit records and normalized usage accounting
 - Revision-based, idempotent session commits with cross-process file locking
@@ -157,15 +158,13 @@ application needs them.
   internal model and complete Run lifecycle.
 - [Kernel–Harness Design](docs/runtime-kernel-harness-design.md) — normative
   architectural boundaries and invariants.
-- [Runnable Examples](examples/README.md) — focused examples for chat, tools,
-  MCP, Skills, recovery, and durable sessions.
 
 ## Development
 
 ```bash
 uv sync --locked --all-extras --group dev
-uv run ruff check src tests examples benchmarks
-uv run ruff format --check src tests examples benchmarks
+uv run ruff check src tests benchmarks
+uv run ruff format --check src tests benchmarks
 uv run mypy
 uv run python -m unittest discover -s tests -p 'test*.py' -q
 uv build

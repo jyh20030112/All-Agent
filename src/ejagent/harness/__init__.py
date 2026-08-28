@@ -5,7 +5,6 @@ from ejagent.harness._control import (
     FollowUpHandle,
     FollowUpRejectedError,
 )
-from ejagent.harness._memory import MemorySessionStore
 from ejagent.harness.core import (
     AgentHarness,
     HarnessClosedError,
@@ -20,6 +19,5 @@ __all__ = [
     "FollowUpRejectedError",
     "HarnessClosedError",
     "HarnessStatus",
-    "MemorySessionStore",
     "SessionStoreProtocolError",
 ]

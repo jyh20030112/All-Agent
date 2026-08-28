@@ -18,13 +18,6 @@ from ejagent.contracts.messages import ToolCall
 _TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
-class ToolEffect(StrEnum):
-    """Whether a Tool changes externally observable state."""
-
-    READ_ONLY = "read_only"
-    SIDE_EFFECTING = "side_effecting"
-
-
 class ToolControl(StrEnum):
     """Terminal control requested by one Tool execution."""
 
@@ -35,43 +28,12 @@ class ToolControl(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class ToolSemantics:
-    """Execution semantics consumed by scheduling and retry policy."""
-
-    effect: ToolEffect = ToolEffect.SIDE_EFFECTING
-    idempotent: bool = False
-    concurrency_key: str | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.effect, ToolEffect):
-            raise TypeError("tool effect must be a ToolEffect")
-        if not isinstance(self.idempotent, bool):
-            raise TypeError("tool idempotent must be a boolean")
-        if self.concurrency_key is not None and (
-            not isinstance(self.concurrency_key, str)
-            or not self.concurrency_key.strip()
-        ):
-            raise ValueError("tool concurrency_key must not be empty")
-
-    @classmethod
-    def read_only(cls, *, concurrency_key: str | None = None) -> ToolSemantics:
-        """Return conservative semantics for one read-only Tool."""
-
-        return cls(
-            effect=ToolEffect.READ_ONLY,
-            idempotent=True,
-            concurrency_key=concurrency_key,
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class ToolDefinition:
     """Provider-neutral Tool definition exposed to a Runtime Kernel."""
 
     name: str
     description: str | None = None
     input_schema: JsonObject = field(default_factory=dict)
-    semantics: ToolSemantics = field(default_factory=ToolSemantics)
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not _TOOL_NAME_PATTERN.fullmatch(
@@ -89,8 +51,6 @@ class ToolDefinition:
             "input_schema",
             freeze_json_object(self.input_schema, label="tool input_schema"),
         )
-        if not isinstance(self.semantics, ToolSemantics):
-            raise TypeError("tool semantics must be ToolSemantics")
 
 
 @dataclass(frozen=True, slots=True)

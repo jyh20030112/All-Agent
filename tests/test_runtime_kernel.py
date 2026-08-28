@@ -33,7 +33,6 @@ from ejagent.contracts import (
     ToolExecutor,
     ToolProtocolError,
     ToolResultMessage,
-    ToolSemantics,
     UserMessage,
     thaw_json_value,
 )
@@ -142,6 +141,39 @@ class RecordingTools(ToolExecutor):
         return result
 
 
+class ConcurrentTools(ToolExecutor):
+    def __init__(self) -> None:
+        self.started = {
+            "lookup-1": asyncio.Event(),
+            "lookup-2": asyncio.Event(),
+        }
+        self.release = {
+            "lookup-1": asyncio.Event(),
+            "lookup-2": asyncio.Event(),
+        }
+        self.completed = {
+            "lookup-1": asyncio.Event(),
+            "lookup-2": asyncio.Event(),
+        }
+        self.completion_order: list[str] = []
+
+    @property
+    def definitions(self) -> Sequence[ToolDefinition]:
+        return (lookup_definition(),)
+
+    async def execute(
+        self,
+        call: ToolCall,
+        *,
+        cancellation: CancellationToken,
+    ) -> ToolExecutionResult:
+        self.started[call.id].set()
+        await self.release[call.id].wait()
+        self.completion_order.append(call.id)
+        self.completed[call.id].set()
+        return ToolExecutionResult({"call_id": call.id})
+
+
 def lookup_definition() -> ToolDefinition:
     return ToolDefinition(
         name="lookup",
@@ -151,7 +183,6 @@ def lookup_definition() -> ToolDefinition:
             "properties": {"key": {"type": "string"}},
             "required": ["key"],
         },
-        semantics=ToolSemantics.read_only(),
     )
 
 
@@ -246,6 +277,39 @@ class RuntimeKernelTests(unittest.IsolatedAsyncioTestCase):
                 tool_message,
                 AssistantMessage(content="answer is 42"),
             ),
+        )
+
+    async def test_tool_batch_runs_concurrently_and_commits_in_source_order(
+        self,
+    ) -> None:
+        calls = (lookup_call("lookup-1"), lookup_call("lookup-2"))
+        model = ScriptedModel(
+            [
+                (AssistantMessage(tool_calls=calls), None),
+                (AssistantMessage(content="done"), None),
+            ]
+        )
+        tools = ConcurrentTools()
+        running = asyncio.create_task(
+            RuntimeKernel(model=model, tools=tools, clock=fixed_clock).run(task_spec())
+        )
+
+        await asyncio.wait_for(tools.started["lookup-1"].wait(), timeout=0.2)
+        await asyncio.wait_for(tools.started["lookup-2"].wait(), timeout=0.2)
+        tools.release["lookup-2"].set()
+        await tools.completed["lookup-2"].wait()
+        tools.release["lookup-1"].set()
+        outcome = await running
+
+        self.assertEqual(tools.completion_order, ["lookup-2", "lookup-1"])
+        results = tuple(
+            message
+            for message in outcome.delta.messages
+            if isinstance(message, ToolResultMessage)
+        )
+        self.assertEqual(
+            tuple(message.tool_call_id for message in results),
+            ("lookup-1", "lookup-2"),
         )
 
     async def test_completing_tool_terminates_without_another_model_request(

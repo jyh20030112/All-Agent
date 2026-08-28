@@ -43,7 +43,6 @@ def main() -> None:
         "IdentityContextPipeline",
         "DerivedCompactionPipeline",
         "SkillsContextPipeline",
-        "MemorySessionStore",
         "JsonlSessionStore",
         "SkillCatalog",
     }

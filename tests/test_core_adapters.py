@@ -29,7 +29,6 @@ from ejagent.contracts import (
     ToolExecutionResult,
     ToolProtocolError,
     ToolResultMessage,
-    ToolSemantics,
     TransientInstruction,
     UserMessage,
 )
@@ -346,7 +345,6 @@ class ToolExecutorAdapterTests(unittest.IsolatedAsyncioTestCase):
                     ToolDefinition(
                         "add",
                         input_schema={"type": "object"},
-                        semantics=ToolSemantics.read_only(),
                     ),
                     add,
                 ),
@@ -381,10 +379,7 @@ class ToolExecutorAdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_mcp_executor_owns_lifecycle_and_normalizes_metadata(self) -> None:
         manager = FakeMcpManager()
-        executor = McpToolExecutor(
-            manager=manager,
-            semantics={"docs__search": ToolSemantics.read_only()},
-        )
+        executor = McpToolExecutor(manager=manager)
 
         await executor.start()
         result = await executor.execute(

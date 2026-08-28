@@ -76,7 +76,6 @@ from ejagent.contracts.runs import (
 from ejagent.contracts.session import (
     SessionCommit,
     SessionConflictError,
-    SessionMigrationError,
     SessionSnapshot,
     SessionStore,
     SessionStoreError,
@@ -86,12 +85,10 @@ from ejagent.contracts.session import (
 from ejagent.contracts.tools import (
     ToolControl,
     ToolDefinition,
-    ToolEffect,
     ToolExecutionError,
     ToolExecutionResult,
     ToolExecutor,
     ToolProtocolError,
-    ToolSemantics,
 )
 from ejagent.contracts.usage import RunUsage
 
@@ -149,7 +146,6 @@ __all__ = [
     "RunObserver",
     "SessionCommit",
     "SessionConflictError",
-    "SessionMigrationError",
     "SessionSnapshot",
     "SessionStore",
     "SessionStoreError",
@@ -161,13 +157,11 @@ __all__ = [
     "ToolCall",
     "ToolControl",
     "ToolDefinition",
-    "ToolEffect",
     "ToolExecutionError",
     "ToolExecutionResult",
     "ToolExecutor",
     "ToolProtocolError",
     "ToolResultMessage",
-    "ToolSemantics",
     "TransientInstruction",
     "UserMessage",
     "freeze_json_object",

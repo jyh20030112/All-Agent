@@ -50,7 +50,6 @@ from ejagent.harness._control import (
     _QueuedFollowUp,
     _RunControls,
 )
-from ejagent.harness._memory import MemorySessionStore
 from ejagent.kernel import RuntimeKernel
 
 RunIdFactory = Callable[[], str]
@@ -128,7 +127,7 @@ class AgentHarness:
         self._tools = tools
         self._context = context
         self._observers = tuple(observers)
-        self._store = store if store is not None else MemorySessionStore()
+        self._store = store
         self._snapshot = initial
         self._limits = limits or RunLimits()
         self._configuration_revision = configuration_revision
@@ -219,10 +218,11 @@ class AgentHarness:
                 for resource in self._resources:
                     await resource.start()
                     started.append(resource)
-                loaded = await self._store.load(self._agent_id)
-                if loaded is not None:
-                    self._validate_loaded_snapshot(loaded)
-                    self._snapshot = loaded
+                if self._store is not None:
+                    loaded = await self._store.load(self._agent_id)
+                    if loaded is not None:
+                        self._validate_loaded_snapshot(loaded)
+                        self._snapshot = loaded
             except BaseException:
                 await self._rollback_start(started)
                 self._status = HarnessStatus.NEW
@@ -501,6 +501,15 @@ class AgentHarness:
             base=base.conversation,
             outcome=outcome,
         )
+        if self._store is None:
+            self._snapshot = SessionSnapshot(
+                agent_id=self._agent_id,
+                conversation=commit.resulting_conversation,
+                last_result=(
+                    outcome.result if commit.advances_revision else base.last_result
+                ),
+            )
+            return outcome
         try:
             snapshot = await self._store.commit(commit)
         except SessionStoreError as exc:

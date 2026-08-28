@@ -5,7 +5,7 @@
 This document defines the implemented pre-1.0 EJAgent Core architecture and is
 normative for its contracts. The former stateful agent loop, dictionary-message
 runtime, Handler/Middleware stack, and event-driven Session writer have been
-removed. Only a Store-private decoder remains for one-way legacy migration.
+removed.
 
 Implementation progress:
 
@@ -16,8 +16,8 @@ Implementation progress:
 - `ejagent.harness.AgentHarness` owns single-agent resource lifecycle,
   cancellation, FIFO Run admission, snapshot recovery, and atomic
   compare-and-commit through the new `SessionStore` contract.
-- `MemorySessionStore` provides an idempotent in-process adapter and rejects
-  stale revisions and reused Run IDs with different content.
+- Without a Store, `AgentHarness` keeps only process-local state for its own
+  lifetime. Durable state has one built-in adapter.
 - Conversation recovery now uses an immutable `ConversationSnapshot`; durable
   Run facts are read separately as `RunAudit` values.
 - Every model call receives a disposable `ContextView` from a
@@ -31,9 +31,6 @@ Implementation progress:
   cannot alter execution or commit semantics.
 - `JsonlSessionStore` provides locked, append-only durable commits with CAS,
   idempotent Run IDs, crash-tail recovery, and typed Conversation/Audit codecs.
-  Legacy JSONL Sessions can be imported once or rejected with an actionable
-  `SessionMigrationError`; compacted projections are not treated as source
-  history.
 - `OpenAIModelPort` translates typed Context and Tool values at the Provider
   seam. Function, composite, and MCP ToolExecutors share the Kernel Tool
   contract; `SkillsContextPipeline` contributes disposable skill instructions.
@@ -41,8 +38,6 @@ Implementation progress:
   blocks, streamed tool input, and cache-aware usage from the Anthropic
   Messages protocol. Both Provider adapters pass the same Kernel-facing stream
   contract without adding Provider concepts to Core.
-- Representative OpenAI, Anthropic, local Tool, MCP, Skills, memory recovery,
-  and durable recovery examples run through `AgentHarness`.
 - `ejagent` now exports only the new composition surface. Legacy execution and
   commit packages are absent from built artifacts. Migration stages 1–8 are
   complete.
@@ -134,13 +129,13 @@ New extension points are limited to narrow, ordered protocols:
 Resources are started transactionally by the Harness and shut down in reverse
 order. Kernel and Tool dispatch methods require ready dependencies.
 
-## Tool Semantics
+## Tool Execution
 
-Tool scheduling does not infer safety from implementation names. Definitions
-declare effect, idempotency, and an optional concurrency key. Execution may be
-concurrent only when semantics and policy permit it. Completion and
-Conversation commit order always follow the model's source order; actual timing
-is retained in Audit records. Non-idempotent Tools are never retried by Core.
+All Tool calls from one model response execute concurrently. Results enter the
+Conversation in the model's source order, while Audit completion events retain
+actual timing. If one call fails at the Tool infrastructure seam or the Run is
+cancelled, unfinished sibling calls are cancelled. Core has no serial mode and
+does not retry Tools.
 
 ## Failure Contract
 
@@ -166,8 +161,8 @@ is enforced before considering separate Provider or backend packages.
 2. Implement the Kernel over a private workspace and deterministic Delta.
 3. Implement the Harness, resource lifecycle, controls, and atomic commit.
 4. Split Conversation, Audit, and ContextView; make compaction derived.
-5. adapt Memory/JSONL Stores and provide legacy Session decoding/migration.
-6. Adapt OpenAI, MCP, Skills, examples, and documentation.
+5. Add locked, append-only JSONL Session persistence.
+6. Adapt OpenAI, MCP, Skills, and documentation.
 7. Replace the public API and delete the old execution path.
 8. Validate `ModelPort` with a second, materially different Provider protocol.
 
@@ -184,6 +179,4 @@ expose two competing execution or commit semantics.
 - Context compaction is rebuildable from immutable Conversation history.
 - Tool execution timing may vary, but Delta order remains deterministic.
 - ModelPort and SessionStore implementations pass shared contract suites.
-- Legacy Session fixtures either migrate losslessly or fail with a typed,
-  actionable migration error.
 - Kernel modules do not import concrete Providers, Stores, MCP, or Skills.

@@ -12,7 +12,6 @@ from ejagent.contracts.tools import (
     ToolExecutionError,
     ToolExecutionResult,
     ToolExecutor,
-    ToolSemantics,
 )
 from ejagent.tools._mcp_manager import McpServerManager
 
@@ -35,7 +34,6 @@ class McpToolExecutor(ToolExecutor):
         config_path: str | Path | None = None,
         *,
         manager: McpManager | None = None,
-        semantics: Mapping[str, ToolSemantics] | None = None,
     ) -> None:
         if (config_path is None) == (manager is None):
             raise ValueError("provide exactly one of config_path or manager")
@@ -44,11 +42,6 @@ class McpToolExecutor(ToolExecutor):
             self._manager: McpManager = McpServerManager(config_path)
         else:
             self._manager = manager
-        self._semantics = dict(semantics or {})
-        if not all(
-            isinstance(item, ToolSemantics) for item in self._semantics.values()
-        ):
-            raise TypeError("MCP semantics values must be ToolSemantics")
         self._definitions: tuple[ToolDefinition, ...] = ()
         self._started = False
 
@@ -68,12 +61,6 @@ class McpToolExecutor(ToolExecutor):
             names = [definition.name for definition in definitions]
             if len(names) != len(set(names)):
                 raise ValueError("MCP manager returned duplicate tool names")
-            unknown = self._semantics.keys() - set(names)
-            if unknown:
-                raise ValueError(
-                    "MCP semantics reference unknown tools: "
-                    + ", ".join(sorted(unknown))
-                )
             self._definitions = definitions
         except BaseException:
             await self._manager.shutdown()
@@ -131,7 +118,6 @@ class McpToolExecutor(ToolExecutor):
             name=name,
             description=description,
             input_schema=self._json_object(parameters),
-            semantics=self._semantics.get(name, ToolSemantics()),
         )
 
     @staticmethod

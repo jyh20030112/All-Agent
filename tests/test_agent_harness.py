@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import unittest
 from collections.abc import AsyncIterator, Iterable, Sequence
-from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 
 from ejagent.contracts import (
     AssistantMessage,
@@ -17,7 +18,6 @@ from ejagent.contracts import (
     ModelStreamEvent,
     RunStatus,
     SessionCommit,
-    SessionConflictError,
     SessionSnapshot,
     SessionStore,
     SessionStoreError,
@@ -33,8 +33,8 @@ from ejagent.harness import (
     AgentHarness,
     HarnessClosedError,
     HarnessStatus,
-    MemorySessionStore,
 )
+from ejagent.storage import JsonlSessionStore
 
 
 def fixed_clock() -> datetime:
@@ -148,8 +148,13 @@ class ManagedNoTools(NoTools):
 
 
 class AgentHarnessTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.store_root = Path(temporary.name)
+
     async def test_successful_run_commits_only_after_store_accepts(self) -> None:
-        store = MemorySessionStore()
+        store = JsonlSessionStore(self.store_root)
         model = ScriptedModel([AssistantMessage(content="done")])
         run_ids = ids("run-1")
         harness = AgentHarness(
@@ -176,7 +181,6 @@ class AgentHarnessTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(harness.last_result, outcome.result)
         self.assertEqual((await store.load("agent-1")), harness.snapshot)
-        self.assertEqual(len(await store.commits("agent-1")), 1)
         audit = await store.load_audit("agent-1")
         self.assertEqual(len(audit), 1)
         self.assertTrue(audit[0].committed)
@@ -185,7 +189,7 @@ class AgentHarnessTests(unittest.IsolatedAsyncioTestCase):
         await harness.shutdown()
 
     async def test_failed_run_is_audited_without_advancing_conversation(self) -> None:
-        store = MemorySessionStore()
+        store = JsonlSessionStore(self.store_root)
         model = ScriptedModel(
             [
                 ModelCallError(
@@ -210,10 +214,6 @@ class AgentHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outcome.result.status, RunStatus.FAILED)
         self.assertEqual(harness.revision, 0)
         self.assertEqual(harness.messages, (SystemMessage("stable"),))
-        commits = await store.commits("agent-failed")
-        self.assertEqual(len(commits), 1)
-        self.assertFalse(commits[0].advances_revision)
-        self.assertEqual(commits[0].outcome.failure, outcome.failure)
         audit = await store.load_audit("agent-failed")
         self.assertFalse(audit[0].committed)
         self.assertEqual(audit[0].resulting_revision, 0)
@@ -275,7 +275,6 @@ class AgentHarnessTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_continue_run_uses_history_without_new_user_message(self) -> None:
-        store = MemorySessionStore()
         model = ScriptedModel(
             [
                 AssistantMessage(content="initial"),
@@ -287,7 +286,6 @@ class AgentHarnessTests(unittest.IsolatedAsyncioTestCase):
             agent_id="continue-agent",
             model=model,
             tools=NoTools(),
-            store=store,
             run_id_factory=lambda: next(run_ids),
             clock=fixed_clock,
         )
@@ -300,9 +298,8 @@ class AgentHarnessTests(unittest.IsolatedAsyncioTestCase):
             outcome.delta.messages,
             (AssistantMessage(content="continued"),),
         )
-        commits = await store.commits("continue-agent")
-        self.assertEqual(commits[-1].outcome.delta.base_revision, 1)
-        self.assertEqual(commits[-1].outcome.result.run_id, "continue-run")
+        self.assertEqual(outcome.delta.base_revision, 1)
+        self.assertEqual(outcome.result.run_id, "continue-run")
 
     async def test_cancellation_is_structured_and_does_not_commit_delta(self) -> None:
         model = BlockingModel()
@@ -413,7 +410,7 @@ class AgentHarnessTests(unittest.IsolatedAsyncioTestCase):
             await harness.run("too late")
 
     async def test_new_harness_restores_the_committed_snapshot(self) -> None:
-        store = MemorySessionStore()
+        store = JsonlSessionStore(self.store_root)
         first = AgentHarness(
             agent_id="durable-agent",
             model=ScriptedModel([AssistantMessage(content="saved")]),
@@ -444,45 +441,8 @@ class AgentHarnessTests(unittest.IsolatedAsyncioTestCase):
             (UserMessage("persist"), AssistantMessage(content="saved")),
         )
 
-    async def test_memory_store_repeats_identical_commit_idempotently(self) -> None:
-        store = MemorySessionStore()
-        harness = AgentHarness(
-            agent_id="idempotent-agent",
-            model=ScriptedModel([AssistantMessage(content="once")]),
-            tools=NoTools(),
-            store=store,
-            run_id_factory=lambda: "stable-run-id",
-            clock=fixed_clock,
-        )
-        await harness.run("commit")
-        commit = (await store.commits("idempotent-agent"))[0]
-
-        repeated = await store.commit(commit)
-
-        self.assertEqual(repeated, harness.snapshot)
-        self.assertEqual(len(await store.commits("idempotent-agent")), 1)
-
-    async def test_memory_store_rejects_reused_run_id_with_new_content(self) -> None:
-        store = MemorySessionStore()
-        harness = AgentHarness(
-            agent_id="reuse-agent",
-            model=ScriptedModel([AssistantMessage(content="original")]),
-            tools=NoTools(),
-            store=store,
-            run_id_factory=lambda: "reused-id",
-            clock=fixed_clock,
-        )
-        await harness.run("commit")
-        commit = (await store.commits("reuse-agent"))[0]
-        changed_result = replace(commit.outcome.result, output="changed")
-        changed_outcome = replace(commit.outcome, result=changed_result)
-        changed_commit = replace(commit, outcome=changed_outcome)
-
-        with self.assertRaises(SessionConflictError):
-            await store.commit(changed_commit)
-
     async def test_stale_harness_commit_becomes_persistence_failure(self) -> None:
-        store = MemorySessionStore()
+        store = JsonlSessionStore(self.store_root)
         first = AgentHarness(
             agent_id="shared-agent",
             model=ScriptedModel([AssistantMessage(content="winner")]),

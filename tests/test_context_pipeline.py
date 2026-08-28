@@ -36,7 +36,7 @@ from ejagent.contracts import (
     TransientInstruction,
     UserMessage,
 )
-from ejagent.harness import AgentHarness, MemorySessionStore
+from ejagent.harness import AgentHarness
 from ejagent.kernel import RuntimeKernel
 
 
@@ -323,7 +323,6 @@ class ContextPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outcome.delta.messages, (UserMessage("task"),))
 
     async def test_harness_compaction_never_rewrites_conversation(self) -> None:
-        store = MemorySessionStore()
         model = RecordingModel(
             [
                 AssistantMessage(content="first answer"),
@@ -340,7 +339,6 @@ class ContextPipelineTests(unittest.IsolatedAsyncioTestCase):
                 minimum_messages=2,
             ),
             initial_messages=(SystemMessage("stable"),),
-            store=store,
             run_id_factory=lambda: next(run_ids),
         )
 
@@ -354,9 +352,6 @@ class ContextPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(
             any(isinstance(message, ContextSummary) for message in harness.messages)
         )
-        persisted = await store.load("derived-context-agent")
-        assert persisted is not None
-        self.assertEqual(persisted.messages, harness.messages)
 
 
 if __name__ == "__main__":

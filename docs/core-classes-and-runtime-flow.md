@@ -78,7 +78,8 @@ async with harness:
 8. Kernel 将 Context 和当前工具定义组成 `ModelRequest`，交给 `ModelPort`。
 9. Provider adapter 把厂商流归一为 `ModelTextDelta`、
    `ModelThinkingDelta`，最后必须给出一个 `ModelResponseCompleted`。
-10. 没有工具调用时，文本响应结束 Run；有工具调用时，Kernel 按模型返回顺序执行。
+10. 没有工具调用时，文本响应结束 Run；有多个工具调用时，Kernel 同时执行整个批次，
+    再按模型给出的调用顺序写入结果。
 11. 每个工具返回 `ToolExecutionResult`。`CONTINUE` 会把结果加入 workspace 并进入
     下一 turn；`COMPLETE`、`REJECT`、`CANCEL` 立即结束 Run。
 12. Kernel 返回 `RunOutcome(result, delta, audit_records, failure)`，但不写 Store。
@@ -103,7 +104,7 @@ async with harness:
 | `tools` | 一个 `ToolExecutor`；无工具时传空的 `FunctionToolExecutor()`。 |
 | `context` | 可选 `ContextPipeline`；省略时 Kernel 使用 identity 投影。 |
 | `initial_messages` | Store 没有已有快照时的初始 Conversation，通常放 system prompt。 |
-| `store` | 默认 `MemorySessionStore`；生产恢复通常使用 `JsonlSessionStore`。 |
+| `store` | 省略时只保留 Harness 内的临时状态；持久化使用 `JsonlSessionStore`。 |
 | `observers` | Store 决策后异步接收 `RunAudit`，不能参与提交。 |
 | `resources` | 额外的 `ManagedResource`，由 Harness 一并管理。 |
 | `limits` | 默认 `RunLimits`，可在每次 `run()` 时覆盖。 |
@@ -152,8 +153,9 @@ Run、丢弃排队 follow-up、等待 observer，然后反向关闭资源。
 | `max_turns=20` | 模型—工具循环最大 turn 数。 |
 | `max_tokens=None` | 下一次模型请求前检查累计总 token；缺 usage 时安全终止。 |
 | `max_repeated_tool_calls=3` | 相同工具和参数连续出现达到该次数时终止。 |
-| `parallel_tool_calls=False` | 预留字段；当前 Kernel 仍顺序执行工具。 |
-| `max_parallel_tool_calls=None` | 预留字段；当前没有并发调度器。 |
+
+工具批次始终并发执行，没有串行开关或并发数量配置。结果按模型调用顺序进入
+Conversation；Audit 中的完成事件保留真实完成顺序。
 
 当前也没有可注入的 `RunPolicy` 类；预算、终止和提交资格分别固化在
 `RuntimeKernel` 与 `SessionCommit` 中。项目不支持真正的 mid-Run 暂停/恢复，也不
@@ -284,9 +286,7 @@ context = SkillsContextPipeline(
 
 | 类 | 作用 |
 | --- | --- |
-| `ToolDefinition` | 名称、描述、JSON Schema 和 `ToolSemantics`。 |
-| `ToolSemantics` | effect、幂等性和可选 concurrency key。默认保守地视为有副作用且不幂等。 |
-| `ToolEffect` | `READ_ONLY` 或 `SIDE_EFFECTING`。 |
+| `ToolDefinition` | 名称、描述和 JSON Schema。 |
 | `ToolExecutionResult` | JSON 结果、终止 control、用户输出和可选错误。 |
 | `ToolControl` | `CONTINUE`、`COMPLETE`、`REJECT`、`CANCEL`。 |
 | `ToolExecutor` | definitions + execute 的稳定 seam。 |
@@ -301,8 +301,8 @@ context = SkillsContextPipeline(
 顺序启动、反序关闭子资源。
 
 `McpToolExecutor` 接收 `config_path` 或注入的 `McpManager`，二者必须且只能提供一个。
-它在启动后把 MCP schema 转成 Core `ToolDefinition`，并可用 `semantics={tool_name:
-ToolSemantics(...)}` 覆盖安全语义。内部 `McpServerManager` 使用 FastMCP，工具名改为
+它在启动后把 MCP schema 转成 Core `ToolDefinition`。内部 `McpServerManager` 使用
+FastMCP，工具名改为
 `service__tool` 防止跨服务碰撞。依赖通过 `uv sync --extra mcp` 安装。
 单个 MCP service 连接失败会被记录并跳过，不会回滚其他已经连接成功的 service；
 调用方应在启动后检查 `definitions` 是否符合预期。
@@ -316,17 +316,16 @@ ToolSemantics(...)}` 覆盖安全语义。内部 `McpServerManager` 使用 FastM
 }
 ```
 
-当前 Kernel 即使收到多个 tool calls 也会按源顺序执行；`ToolSemantics` 已形成稳定
-契约，但并发调度和基于幂等性的重试尚未实现。
+Kernel 并发执行同一模型响应中的全部 tool calls。所有结果完成后，按调用源顺序写入
+Delta；任何调用失败或 Run 取消时，尚未完成的兄弟任务会被取消。
 
 ## 11. 配置来源总览
 
 | 配置来源 | 使用者 | 说明 |
 | --- | --- | --- |
 | `.env` / 环境变量 | 两种 Provider config | `from_env()` 会先调用 `load_dotenv()`。 |
-| `examples/mcp_config.json` | `McpToolExecutor` | MCP service 命令、参数和传输配置。 |
+| MCP 配置文件 | `McpToolExecutor` | MCP service 命令、参数和传输配置。 |
 | Skills 目录 | `SkillsContextPipeline` | 每个直接子目录以 `SKILL.md` 为入口。 |
-| `EJAGENT_SESSION_DIR` | durable-session 示例 | 仅示例读取；Core 本身不读取该变量。 |
 | `pyproject.toml` extras | 安装过程 | `anthropic` 和 `mcp` 均为可选依赖。 |
 
 运行环境要求 Python 3.12+。开发环境使用
@@ -344,8 +343,8 @@ ToolSemantics(...)}` 覆盖安全语义。内部 `McpServerManager` 使用 FastM
 - 同一 run ID + 相同 commit 必须幂等；同一 ID + 不同内容必须冲突。
 - Store 必须同时比较 revision 和 base messages，防止 stale write。
 
-`MemorySessionStore` 使用 `asyncio.Lock`，适合测试、单进程共享和示例；进程退出即
-丢失。`commits()` 是额外的检查接口，`load_audit()` 来自 `AuditReader` seam。
+省略 Store 时，Harness 直接维护进程内 snapshot，不提供跨 Harness 恢复或历史 Audit
+查询。需要长期状态时使用 `JsonlSessionStore`。
 
 `JsonlSessionStore` 是 append-only 持久 adapter：
 
@@ -353,23 +352,18 @@ ToolSemantics(...)}` 覆盖安全语义。内部 `McpServerManager` 使用 FastM
 | --- | --- |
 | `root` | journal 目录；文件名是 `sha256(agent_id).core.jsonl`。 |
 | `lock_timeout=10.0` | 进程内锁和 POSIX 文件锁等待秒数；`None` 表示无限等待。 |
-| `legacy_session_id=None` | `load()` 时可进行一次旧 Session 自动迁移。 |
-| `legacy_root=None` | 旧 journal 根目录，默认与 `root` 相同。 |
 
 它对每个完整 JSONL record 校验 schema 和连续 sequence；崩溃留下的最后一个不完整
 行会被忽略，并在下次追加前截断。`StoreFileLock` 提供进程内线程锁和 POSIX advisory
 lock；因此该 adapter 的跨进程保证目前要求 POSIX。
 
-`migrate_legacy()` 可显式导入旧 journal。`LegacySessionMigration` 是迁移后的快照和
-Audit；无法无损表示、存在未完成 Run 或 agent ID 不一致时抛
-`SessionMigrationError`，其中包含 remediation。`storage.codec` 是 Store 私有的稳定
-JSON 编解码层，不应作为业务扩展 seam。
+`storage.codec` 是 Store 私有的稳定 JSON 编解码层，不应作为业务扩展 seam。
 
 相关 Store 错误类：`SessionStoreError` 是预期持久化错误的基类；
 `SessionConflictError` 表示 CAS 或 run ID 冲突；
 `SessionStoreSerializationError` 表示 journal/schema 损坏；
-`SessionStoreLockTimeoutError` 表示文件锁超时；`SessionMigrationError` 表示旧数据
-不能无损迁移。`SessionStoreProtocolError` 则由 Harness 用来报告 Store adapter 返回了
+`SessionStoreLockTimeoutError` 表示文件锁超时。`SessionStoreProtocolError` 则由
+Harness 用来报告 Store adapter 返回了
 与提议 commit 不一致的对象。
 
 ## 13. 控制、取消、Observer 与资源
@@ -451,7 +445,6 @@ Observer 不适合做必须成功的业务写入，因为其失败不会改变 R
 | `_StoreIndex` | 重放 JSONL 后得到 snapshot、audit 和幂等索引。 |
 | `StoreFileLock` / `_ProcessLockEntry` | 同进程与跨进程文件锁实现。 |
 | `McpServerManager` / `_McpToolRoute` | MCP 连接、命名空间与调用路由。 |
-| `LegacySessionData` / `LegacyRun` / `LegacyRunResult` | 旧 journal 的 Store 私有解码模型。 |
 
 `ControlProtocolError`、`ContextProtocolError`、`ModelProtocolError` 和
 `ToolProtocolError` 都表示 seam 的实现违反约定，原则上应修 adapter；
@@ -463,12 +456,11 @@ Observer 不适合做必须成功的业务写入，因为其失败不会改变 R
 | --- | --- |
 | `src/ejagent/contracts/` | 全部稳定值对象、枚举、错误和 Protocol。 |
 | `src/ejagent/kernel/` | 单 Run 循环和私有 workspace。 |
-| `src/ejagent/harness/` | 生命周期、控制队列、Memory Store 和提交协调。 |
+| `src/ejagent/harness/` | 生命周期、控制队列和提交协调。 |
 | `src/ejagent/context/` | Identity、DerivedCompaction、Skills pipelines。 |
 | `src/ejagent/providers/` | OpenAI、Anthropic adapters 与配置。 |
 | `src/ejagent/tools/` | Function、Composite、MCP executors。 |
-| `src/ejagent/storage/` | JSONL Store、锁、codec 和旧 Session 迁移。 |
+| `src/ejagent/storage/` | JSONL Store、锁和 codec。 |
 | `src/ejagent/skills/` | `Skill` 与 `SkillCatalog`。 |
 
-建议按 `examples/01_stateful_chat.py` → `02_custom_tool.py` →
-`05_skill.py` → `07_durable_session.py` 的顺序阅读，再进入 Harness 和 Kernel 实现。
+建议先阅读测试所描述的行为，再进入 Harness 和 Kernel 实现。

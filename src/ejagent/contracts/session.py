@@ -114,23 +114,6 @@ class SessionStoreLockTimeoutError(SessionStoreError):
     """A durable Session lock could not be acquired within its timeout."""
 
 
-class SessionMigrationError(SessionStoreError):
-    """Legacy Session data cannot be converted without losing semantics."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        remediation: str,
-    ) -> None:
-        if not message.strip():
-            raise ValueError("migration error message must not be empty")
-        if not remediation.strip():
-            raise ValueError("migration remediation must not be empty")
-        self.remediation = remediation
-        super().__init__(f"{message} Remediation: {remediation}")
-
-
 class SessionStore(Protocol):
     """Durable compare-and-commit seam owned by an AgentHarness."""
 
