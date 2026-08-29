@@ -120,6 +120,22 @@ harness = AgentHarness(
 )
 ```
 
+## Streamlit Validation App
+
+The repository includes one interactive validation app for the Harness runtime.
+It runs without credentials in deterministic demo mode, or against the
+OpenAI-compatible endpoint configured above.
+
+```bash
+uv sync --locked --extra streamlit
+uv run streamlit run examples/streamlit_app.py
+```
+
+Use the app to inspect JSONL recovery, concurrent Tool timing, cancellation,
+Steering, FIFO Follow-ups, Run limits, revisions, usage, and durable Audit
+records. Runtime settings are captured when you click **Start**; stop the
+runtime before changing them.
+
 ## Customize Every Boundary
 
 | You want to change               | Extension point    |
@@ -163,8 +179,8 @@ application needs them.
 
 ```bash
 uv sync --locked --all-extras --group dev
-uv run ruff check src tests benchmarks
-uv run ruff format --check src tests benchmarks
+uv run ruff check src tests examples benchmarks
+uv run ruff format --check src tests examples benchmarks
 uv run mypy
 uv run python -m unittest discover -s tests -p 'test*.py' -q
 uv build

@@ -115,6 +115,20 @@ harness = AgentHarness(
 )
 ```
 
+## Streamlit 验证应用
+
+仓库提供一个用于验证 Harness 运行时的交互式应用。确定性 Demo 模式不需要凭据，
+也可以切换到前文配置的 OpenAI-compatible Endpoint。
+
+```bash
+uv sync --locked --extra streamlit
+uv run streamlit run examples/streamlit_app.py
+```
+
+页面可以检查 JSONL 恢复、工具并行耗时、取消、Steering、FIFO Follow-up、Run
+限制、Revision、Usage 和持久化 Audit。点击 **Start** 时会锁定本次运行配置；如需
+修改，请先停止 Runtime。
+
 ## 每个边界都可以定制
 
 | 想要替换的部分       | 扩展接口           |
@@ -156,8 +170,8 @@ EJAgent Core 专注于单个逻辑 Agent。应用可以在它的外层按需构�
 
 ```bash
 uv sync --locked --all-extras --group dev
-uv run ruff check src tests benchmarks
-uv run ruff format --check src tests benchmarks
+uv run ruff check src tests examples benchmarks
+uv run ruff format --check src tests examples benchmarks
 uv run mypy
 uv run python -m unittest discover -s tests -p 'test*.py' -q
 uv build

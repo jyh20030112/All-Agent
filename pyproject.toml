@@ -23,6 +23,9 @@ anthropic = [
 mcp = [
     "fastmcp>=3.4.2",
 ]
+streamlit = [
+    "streamlit>=1.58.0",
+]
 
 [dependency-groups]
 dev = [
@@ -51,7 +54,7 @@ ignore = [
 
 [tool.mypy]
 python_version = "3.12"
-files = ["src/ejagent"]
+files = ["src/ejagent", "examples"]
 check_untyped_defs = true
 disallow_untyped_defs = true
 no_implicit_optional = true
