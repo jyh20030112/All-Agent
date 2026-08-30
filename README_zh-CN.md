@@ -118,7 +118,7 @@ harness = AgentHarness(
 ## Streamlit 验证应用
 
 仓库提供一个用于验证 Harness 运行时的交互式应用。确定性 Demo 模式不需要凭据，
-也可以切换到前文配置的 OpenAI-compatible Endpoint。
+也可以切换到前文配置的 OpenAI-compatible Endpoint
 
 ```bash
 uv sync --locked --extra streamlit
