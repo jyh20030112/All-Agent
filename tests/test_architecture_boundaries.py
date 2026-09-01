@@ -11,6 +11,7 @@ LOW_LEVEL_PACKAGES = (
     SOURCE_ROOT / "context",
     SOURCE_ROOT / "kernel",
     SOURCE_ROOT / "harness",
+    SOURCE_ROOT / "_trajectory",
 )
 FORBIDDEN_IMPORTS = (
     "ejagent.agent",
@@ -41,6 +42,33 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                         if module.startswith(FORBIDDEN_IMPORTS):
                             relative = path.relative_to(PROJECT_ROOT)
                             violations.append(f"{relative}:{node.lineno}: {module}")
+
+        self.assertEqual(violations, [])
+
+    def test_stable_runtime_layers_do_not_depend_on_internal_trajectory(self) -> None:
+        violations: list[str] = []
+
+        for package in (
+            SOURCE_ROOT / "contracts",
+            SOURCE_ROOT / "context",
+            SOURCE_ROOT / "kernel",
+            SOURCE_ROOT / "harness",
+        ):
+            for path in sorted(package.rglob("*.py")):
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+                for node in ast.walk(tree):
+                    modules: tuple[str, ...]
+                    if isinstance(node, ast.ImportFrom):
+                        modules = (node.module or "",)
+                    elif isinstance(node, ast.Import):
+                        modules = tuple(alias.name for alias in node.names)
+                    else:
+                        continue
+                    if any(
+                        module.startswith("ejagent._trajectory") for module in modules
+                    ):
+                        relative = path.relative_to(PROJECT_ROOT)
+                        violations.append(f"{relative}:{node.lineno}")
 
         self.assertEqual(violations, [])
 

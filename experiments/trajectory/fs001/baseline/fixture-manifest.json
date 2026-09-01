@@ -1,0 +1,51 @@
+{
+  "fixture_version": "fs001-v1",
+  "frozen_clock": "2030-01-01T12:00:00+00:00",
+  "files": {
+    "auth_fixture/__init__.py": "0a39de1eb26369b45d96866e432c94dc69801a63f6df7022ae30b9d984d7348f",
+    "auth_fixture/api.py": "6955085bf888c24a622b54c6352c75d4d0cfac424c25ec2733947f549374bce7",
+    "auth_fixture/tokens.py": "6db7bb4364fb57940791eb706721222ffefb0464ee5210671eff1d4cb0c50582",
+    "auth_fixture/validation.py": "73894f1abb2f22da0f67cc47acffbde92dae61f3ff39f9a8719139223749a7bd",
+    "probe.py": "3ebe62a4f3c7d3baf9e2bf5014ce4c459cd9eb8b90e3f164c4263903056b8d5b",
+    "tests/__init__.py": "1481fd4182b83019f2bc3ea7c0fd07b4f6735dc2d5443bb49272073974b63c53",
+    "tests/test_c1_public_compatibility.py": "2a0eee4fb2057120365039fb0729a3f40d7cdc0aae388c46eed8a0ec181568ce",
+    "tests/test_r1_expired_access.py": "f61ecc2ebe0f8f821e486c59f0bd4cb12004387ff7780308890153ea5f3391f3",
+    "tests/test_r2_refresh_flow.py": "675754283c32714b9f14fecef878bccf84ee562a0b12b7f3d84e25fa62f0653d"
+  },
+  "gold_files": {
+    "auth_fixture/api.py": "7b1416aca5025e8031ee7940bb2e212d405d13414eadd6f5c7311a010d4ce36c",
+    "auth_fixture/validation.py": "6d90df8bb7a547fe46675521357792bd5718e917e280b72555aba1ff5aafa0d5"
+  },
+  "public_contract": {
+    "access_parameters": [
+      "access_token",
+      "now"
+    ],
+    "refresh_parameters": [
+      "access_token",
+      "refresh_token",
+      "now"
+    ],
+    "token_payload_keys": [
+      "expires_at",
+      "issued_at",
+      "kind",
+      "subject"
+    ]
+  },
+  "verifiers": {
+    "C1": "python -m unittest tests.test_c1_public_compatibility -v",
+    "R1": "python -m unittest tests.test_r1_expired_access -v",
+    "R2": "python -m unittest tests.test_r2_refresh_flow -v"
+  },
+  "expected_baseline": {
+    "C1": "pass",
+    "R1": "fail",
+    "R2": "pass"
+  },
+  "expected_gold": {
+    "C1": "pass",
+    "R1": "pass",
+    "R2": "pass"
+  }
+}

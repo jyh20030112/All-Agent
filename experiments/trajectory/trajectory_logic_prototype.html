@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EJAgent 轨迹状态实验原型</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17202a;
+      --muted: #5f6b76;
+      --line: #dce2e7;
+      --panel: #f7f9fa;
+      --accent: #315c8c;
+      --good: #247a52;
+      --bad: #a33d3d;
+      --warn: #946200;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 15px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: #fff;
+    }
+    main { width: min(1100px, calc(100% - 32px)); margin: 36px auto 72px; }
+    h1, h2, h3 { line-height: 1.2; }
+    h1 { margin-bottom: 8px; }
+    .intro { max-width: 850px; color: var(--muted); }
+    .question {
+      margin: 22px 0;
+      padding: 16px 18px;
+      border-left: 4px solid var(--accent);
+      background: var(--panel);
+    }
+    .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .card, .panel {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 16px;
+      background: #fff;
+    }
+    .card small { display: block; color: var(--muted); margin-bottom: 5px; }
+    .value { font-size: 22px; font-weight: 650; }
+    .good { color: var(--good); }
+    .bad { color: var(--bad); }
+    .warn { color: var(--warn); }
+    .section { margin-top: 30px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 9px; }
+    button {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 9px 12px;
+      background: #fff;
+      color: var(--ink);
+      cursor: pointer;
+    }
+    button:hover { border-color: var(--accent); }
+    button.primary { background: var(--accent); color: white; border-color: var(--accent); }
+    button:disabled { opacity: .45; cursor: default; }
+    .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+    .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .walkthrough { background: var(--panel); }
+    .step { margin-right: 8px; margin-bottom: 8px; }
+    .step.done { border-color: var(--good); color: var(--good); }
+    .facts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    dl { margin: 0; }
+    dt { color: var(--muted); font-size: 13px; }
+    dd { margin: 0 0 10px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .empty { color: var(--muted); }
+    @media (max-width: 760px) {
+      .grid, .facts { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <p><strong>THROWAWAY PROTOTYPE</strong> — 仅用于验证轨迹状态逻辑，不是产品界面。</p>
+  <h1>EJAgent 轨迹状态实验原型</h1>
+  <p class="intro">这是可丢弃的逻辑原型，不是 Runtime UI。它让我们直接推动状态，检查环境事实、Requirement 向量、Evidence 和 Progress 是否足以区分健康重复与无进展循环。</p>
+  <div class="question"><strong>要回答的问题：</strong>当两个状态拥有相同的标量覆盖率，但满足的 Requirement 不同，只有在状态重复、没有新证据且成本继续增加时，才判定为 Non-progress Cycle，这个模型是否符合直觉？</div>
+
+  <section class="section">
+    <h2>当前完整状态</h2>
+    <div class="grid">
+      <div class="card"><small>场景</small><div class="value" id="scenario"></div></div>
+      <div class="card"><small>环境状态</small><div class="value" id="stateName"></div></div>
+      <div class="card"><small>Requirement 覆盖率</small><div class="value" id="coverage"></div></div>
+      <div class="card"><small>轨迹判断</small><div class="value" id="classification"></div></div>
+    </div>
+    <div class="panel facts" style="margin-top: 12px">
+      <dl>
+        <dt>R1 过期 Access Token</dt><dd id="r1"></dd>
+        <dt>R2 Refresh Flow</dt><dd id="r2"></dd>
+        <dt>C1 公共兼容性约束</dt><dd id="c1"></dd>
+        <dt>历史最好覆盖率</dt><dd id="best"></dd>
+      </dl>
+      <dl>
+        <dt>刚刚获得</dt><dd id="gained"></dd>
+        <dt>刚刚回归</dt><dd id="regressed"></dd>
+        <dt>新 Evidence</dt><dd id="evidence"></dd>
+        <dt>累计 Action 成本</dt><dd id="cost"></dd>
+      </dl>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>自由操作</h2>
+    <div class="actions">
+      <button data-action="STRICT">A：全局严格校验</button>
+      <button data-action="LEGACY">B：恢复全局宽松</button>
+      <button data-action="SCOPED" class="primary">C：按路径校验</button>
+      <button data-action="INSPECT">获取新的决策证据</button>
+      <button data-action="CLAIM_COMPLETE">Actor 声称完成</button>
+      <button data-action="POLL">轮询外部任务</button>
+      <button data-action="RESET_AUTH">重置认证场景</button>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>引导式场景</h2>
+    <div class="tabs" id="tabs"></div>
+    <div class="panel walkthrough">
+      <h3 id="walkTitle"></h3>
+      <p id="walkDescription"></p>
+      <div id="walkSteps"></div>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>轨迹 Checkpoints</h2>
+    <div class="panel" style="overflow-x:auto">
+      <table>
+        <thead><tr><th>CP</th><th>Action</th><th>State</th><th>R1/R2</th><th>Task Δ</th><th>Regression</th><th>新 Evidence</th><th>判断</th></tr></thead>
+        <tbody id="history"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+  // Portable pure state module. It has no DOM dependency.
+  const TrajectoryModel = (() => {
+    const authFacts = {
+      S0: { r1: false, r2: true, c1: true },
+      S1: { r1: true, r2: false, c1: true },
+      S2: { r1: true, r2: true, c1: true },
+    };
+
+    const coverageOf = facts => (Number(facts.r1) + Number(facts.r2)) / 2;
+
+    function checkpoint(state, action, nextFacts, fingerprint, evidence = []) {
+      const previous = state.facts;
+      const gained = ["r1", "r2"].filter(key => nextFacts[key] && !previous[key]).map(key => key.toUpperCase());
+      const regressed = ["r1", "r2"].filter(key => !nextFacts[key] && previous[key]).map(key => key.toUpperCase());
+      const coverage = coverageOf(nextFacts);
+      const taskDelta = coverage - coverageOf(previous);
+      const history = [...state.history, {
+        sequence: state.history.length,
+        action,
+        fingerprint,
+        stateName: fingerprint,
+        r1: nextFacts.r1,
+        r2: nextFacts.r2,
+        taskDelta,
+        gained,
+        regressed,
+        evidence,
+        classification: "观察中",
+      }];
+      const classification = classify(history, nextFacts, state.completionClaimed);
+      history[history.length - 1] = { ...history[history.length - 1], classification };
+      return {
+        ...state,
+        facts: nextFacts,
+        stateName: fingerprint,
+        coverage,
+        bestCoverage: Math.max(state.bestCoverage, coverage),
+        gained,
+        regressed,
+        evidence,
+        cost: state.cost + 1,
+        history,
+        classification,
+      };
+    }
+
+    function classify(history, facts, completionClaimed) {
+      if (completionClaimed && !(facts.r1 && facts.r2 && facts.c1)) return "过早完成声明";
+      if (facts.r1 && facts.r2 && facts.c1) return "已由事实验证完成";
+      if (history.length >= 5) {
+        const last = history.slice(-4);
+        const samePeriodTwo = last[0].fingerprint === last[2].fingerprint && last[1].fingerprint === last[3].fingerprint;
+        const repeatedWindow = last.slice(2);
+        const noTaskProgress = repeatedWindow.every(item => item.taskDelta <= 0);
+        const noEvidence = repeatedWindow.every(item => item.evidence.length === 0);
+        if (samePeriodTwo && noTaskProgress && noEvidence) return "确认：无进展周期 p=2";
+      }
+      return "观察中";
+    }
+
+    function initialAuth() {
+      const facts = { ...authFacts.S0 };
+      return {
+        scenario: "FS-001 认证修复",
+        facts,
+        stateName: "S0",
+        coverage: .5,
+        bestCoverage: .5,
+        gained: [],
+        regressed: [],
+        evidence: [],
+        cost: 0,
+        completionClaimed: false,
+        pollValue: 0,
+        inspectionIndex: 0,
+        history: [{ sequence: 0, action: "Baseline", fingerprint: "S0", stateName: "S0", r1: false, r2: true, taskDelta: 0, gained: [], regressed: [], evidence: [], classification: "观察中" }],
+        classification: "观察中",
+      };
+    }
+
+    function initialPolling() {
+      const state = initialAuth();
+      return { ...state, scenario: "HC-001 健康轮询", stateName: "JOB-0", history: [{ ...state.history[0], fingerprint: "JOB-0", stateName: "JOB-0", action: "任务已提交" }] };
+    }
+
+    function initialExploration() {
+      const state = initialAuth();
+      return { ...state, scenario: "HC-003 证据探索", stateName: "WORLD-SAME", history: [{ ...state.history[0], fingerprint: "WORLD-SAME", stateName: "WORLD-SAME", action: "环境未改变" }] };
+    }
+
+    function reduce(state, action) {
+      switch (action.type) {
+        case "RESET_AUTH": return initialAuth();
+        case "RESET_POLL": return initialPolling();
+        case "RESET_EXPLORE": return initialExploration();
+        case "STRICT": {
+          const firstVisit = !state.history.some(item => item.fingerprint === "S1");
+          return checkpoint(state, "A：全局严格校验", { ...authFacts.S1 }, "S1", firstVisit ? ["严格全局策略会破坏 Refresh Flow"] : []);
+        }
+        case "LEGACY": return checkpoint(state, "B：恢复全局宽松", { ...authFacts.S0 }, "S0", []);
+        case "SCOPED": return checkpoint(state, "C：按调用路径校验", { ...authFacts.S2 }, "S2", ["路径敏感策略同时满足 R1/R2"]);
+        case "INSPECT": {
+          const items = ["排除 Token schema 假设", "确认两个调用路径共享校验器", "定位全局策略为冲突边界"];
+          const evidence = [items[state.inspectionIndex % items.length]];
+          const next = checkpoint(state, "读取并形成新证据", state.facts, state.stateName, evidence);
+          return { ...next, inspectionIndex: state.inspectionIndex + 1 };
+        }
+        case "POLL": {
+          const value = Math.min(100, state.pollValue + (state.pollValue === 0 ? 10 : state.pollValue === 10 ? 50 : 40));
+          const evidence = [`外部任务进度 ${value}%`];
+          const next = checkpoint(state, "轮询外部任务", state.facts, `JOB-${value}`, evidence);
+          return { ...next, pollValue: value, classification: value === 100 ? "健康完成" : next.classification };
+        }
+        case "CLAIM_COMPLETE": {
+          const claimed = { ...state, completionClaimed: true, cost: state.cost + 1 };
+          const classification = classify(claimed.history, claimed.facts, true);
+          return { ...claimed, classification };
+        }
+        default: return state;
+      }
+    }
+
+    return { initialAuth, initialPolling, initialExploration, reduce };
+  })();
+
+  const scenarios = [
+    { id: "cycle", title: "无进展周期", description: "先允许一次探索；当 S0/S1 第二次重复且没有新证据时，才确认周期。", reset: "RESET_AUTH", steps: [["STRICT", "A：严格"], ["LEGACY", "B：恢复"], ["STRICT", "再次 A"], ["LEGACY", "再次 B"]] },
+    { id: "gold", title: "正确解", description: "路径敏感策略同时满足 R1/R2，并保持 C1。", reset: "RESET_AUTH", steps: [["SCOPED", "应用 C：按路径校验"]] },
+    { id: "poll", title: "健康轮询", description: "Action 重复，但外部状态和 Evidence 持续变化，不应判循环。", reset: "RESET_POLL", steps: [["POLL", "轮询 10%"], ["POLL", "轮询 60%"], ["POLL", "轮询 100%"]] },
+    { id: "explore", title: "证据探索", description: "环境 State 不变，但每次获得新的决策证据，因此是 Epistemic Progress。", reset: "RESET_EXPLORE", steps: [["INSPECT", "排除假设"], ["INSPECT", "确认共享路径"], ["INSPECT", "定位冲突边界"]] },
+    { id: "claim", title: "过早完成", description: "Actor 的文本完成声明不等于 Completion Audit。", reset: "RESET_AUTH", steps: [["CLAIM_COMPLETE", "声称已完成"]] },
+  ];
+
+  let state = TrajectoryModel.initialAuth();
+  let activeScenario = scenarios[0];
+  let walkIndex = 0;
+
+  const $ = id => document.getElementById(id);
+  const verdict = value => value ? '<span class="good">pass</span>' : '<span class="bad">fail</span>';
+  const list = values => values.length ? values.join("、") : '<span class="empty">无</span>';
+
+  function render() {
+    $("scenario").textContent = state.scenario;
+    $("stateName").textContent = state.stateName;
+    $("coverage").textContent = `${Math.round(state.coverage * 100)}%`;
+    $("classification").textContent = state.classification;
+    $("classification").className = "value " + (state.classification.includes("完成") ? "good" : state.classification.includes("周期") || state.classification.includes("过早") ? "bad" : "warn");
+    $("r1").innerHTML = verdict(state.facts.r1);
+    $("r2").innerHTML = verdict(state.facts.r2);
+    $("c1").innerHTML = verdict(state.facts.c1);
+    $("best").textContent = `${Math.round(state.bestCoverage * 100)}%`;
+    $("gained").innerHTML = list(state.gained);
+    $("regressed").innerHTML = list(state.regressed);
+    $("evidence").innerHTML = list(state.evidence);
+    $("cost").textContent = String(state.cost);
+    $("history").innerHTML = state.history.map(item => `<tr><td>CP${item.sequence}</td><td>${item.action}</td><td><code>${item.stateName}</code></td><td>${item.r1 ? "✓" : "✗"} / ${item.r2 ? "✓" : "✗"}</td><td>${item.taskDelta > 0 ? "+" : ""}${item.taskDelta}</td><td>${item.regressed.join(", ") || "—"}</td><td>${item.evidence.join("；") || "—"}</td><td>${item.classification}</td></tr>`).join("");
+    renderWalkthrough();
+  }
+
+  function dispatch(type) {
+    state = TrajectoryModel.reduce(state, { type });
+    render();
+  }
+
+  function startScenario(scenario) {
+    activeScenario = scenario;
+    walkIndex = 0;
+    state = TrajectoryModel.reduce(state, { type: scenario.reset });
+    render();
+  }
+
+  function renderTabs() {
+    $("tabs").innerHTML = scenarios.map(item => `<button class="tab ${item.id === activeScenario.id ? "active" : ""}" data-scenario="${item.id}">${item.title}</button>`).join("");
+    document.querySelectorAll("[data-scenario]").forEach(button => button.addEventListener("click", () => startScenario(scenarios.find(item => item.id === button.dataset.scenario))));
+  }
+
+  function renderWalkthrough() {
+    renderTabs();
+    $("walkTitle").textContent = activeScenario.title;
+    $("walkDescription").textContent = activeScenario.description;
+    $("walkSteps").innerHTML = activeScenario.steps.map(([type, label], index) => `<button class="step ${index < walkIndex ? "done" : ""}" data-step="${index}" ${index > walkIndex ? "disabled" : ""}>${index + 1}. ${label}</button>`).join("");
+    document.querySelectorAll("[data-step]").forEach(button => button.addEventListener("click", () => {
+      const index = Number(button.dataset.step);
+      if (index !== walkIndex) return;
+      dispatch(activeScenario.steps[index][0]);
+      walkIndex += 1;
+      render();
+    }));
+  }
+
+  document.querySelectorAll("[data-action]").forEach(button => button.addEventListener("click", () => dispatch(button.dataset.action)));
+  startScenario(activeScenario);
+</script>
+</body>
+</html>

@@ -1,0 +1,118 @@
+{
+  "all_gates_passed": true,
+  "completion_audit_policy": "continue_current_run",
+  "concurrent_batches": {
+    "ambiguous": {
+      "diagnostics": [
+        "checkpoint:replicated-config:cp1:causal attribution incomplete: concurrent completions were not joined to one State Delta"
+      ],
+      "verdict": "causally_ambiguous"
+    },
+    "attributed": {
+      "diagnostics": [],
+      "verdict": "non_progress_cycle"
+    }
+  },
+  "domains_observed": [
+    "authentication-policy",
+    "deployment-routing",
+    "async-job",
+    "incident-diagnosis",
+    "rate-limited-api",
+    "schema-migration",
+    "replicated-config"
+  ],
+  "event_context_matrix": {
+    "completion_audit_failed": {
+      "completion_continues_same_run": true,
+      "expected_visible": true,
+      "fingerprint_hidden": true,
+      "visible": true
+    },
+    "constraint_violated": {
+      "completion_continues_same_run": true,
+      "expected_visible": true,
+      "fingerprint_hidden": true,
+      "visible": true
+    },
+    "cycle_confirmed": {
+      "completion_continues_same_run": true,
+      "expected_visible": true,
+      "fingerprint_hidden": true,
+      "visible": true
+    },
+    "cycle_suspected": {
+      "completion_continues_same_run": true,
+      "expected_visible": false,
+      "fingerprint_hidden": true,
+      "visible": false
+    },
+    "external_state_changed": {
+      "completion_continues_same_run": true,
+      "expected_visible": true,
+      "fingerprint_hidden": true,
+      "visible": true
+    },
+    "facts_updated": {
+      "completion_continues_same_run": true,
+      "expected_visible": true,
+      "fingerprint_hidden": true,
+      "visible": true
+    },
+    "progress_evaluated": {
+      "completion_continues_same_run": true,
+      "expected_visible": true,
+      "fingerprint_hidden": true,
+      "visible": true
+    }
+  },
+  "experiment": "trajectory-phase2-entry-evidence-v1",
+  "freshness_control": {
+    "diagnostics": [
+      "checkpoint:freshness:cp0:Fact 'freshness:state:0' validity is unknown"
+    ],
+    "verdict": "insufficient_evidence"
+  },
+  "gates": {
+    "ambiguous_concurrent_batch_excluded": true,
+    "attributed_concurrent_batch_assessed": true,
+    "cross_domain_failure_detected": true,
+    "event_context_matrix_matches_policy": true,
+    "exploration_preserved": true,
+    "legitimate_retry_preserved": true,
+    "productive_wait_preserved": true,
+    "regress_then_recover_preserved": true,
+    "unknown_freshness_fails_closed": true
+  },
+  "healthy_controls": {
+    "evidence_gaining_exploration": {
+      "diagnostics": [],
+      "verdict": "no_cycle"
+    },
+    "legitimate_retry": {
+      "diagnostics": [],
+      "verdict": "no_cycle"
+    },
+    "productive_wait": {
+      "diagnostics": [],
+      "verdict": "no_cycle"
+    },
+    "regress_then_recover": {
+      "diagnostics": [],
+      "verdict": "no_cycle"
+    }
+  },
+  "phase1_fs001_artifact_sha256": "3205fa5ee54867120396e35bc4833586307169623334f0091d637d26935db981",
+  "routing_cycle": {
+    "candidate_checkpoint_ids": [
+      "deployment-routing:cp0",
+      "deployment-routing:cp1",
+      "deployment-routing:cp2",
+      "deployment-routing:cp3",
+      "deployment-routing:cp4"
+    ],
+    "diagnostics": [],
+    "period": 2,
+    "verdict": "non_progress_cycle"
+  }
+}

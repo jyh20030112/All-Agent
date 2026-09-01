@@ -1,0 +1,100 @@
+{
+  "status": "completed",
+  "fixture_version": "fs001-v1",
+  "local": {
+    "all_gates_passed": true,
+    "gates": {
+      "fixture_manifest_valid": true,
+      "baseline_s0": true,
+      "gold_from_s0": true,
+      "gold_from_s1": true,
+      "replay_runtime_permitted_cycle": true,
+      "shadow_analyzer_matches_offline_oracle": true,
+      "all_healthy_controls_preserved": true,
+      "context_event_timing": true,
+      "feature_ablation_separates_controls": true
+    },
+    "deterministic_replay": {
+      "runtime_status": "failed",
+      "runtime_stop_reason": "max_steps",
+      "turns": 8,
+      "tool_calls": 8,
+      "offline_verdict": "non_progress_cycle",
+      "period": 2,
+      "task_progress_over_repeated_window": 0.0
+    },
+    "context_timing": {
+      "baseline_projection_turns": [],
+      "state_progress_projection_turns": [1, 2, 3, 4, 5, 6, 7, 8],
+      "confirmed_cycle_intervention_turns": [8]
+    },
+    "feature_ablation_false_positives": {
+      "repeated_action_only": 4,
+      "repeated_state_only": 1,
+      "zero_task_progress_only": 1,
+      "repeated_state_and_zero_task_progress": 1,
+      "state_progress_evidence_cost_oracle": 0
+    },
+    "shadow_live_replay": {
+      "trial_count": 9,
+      "all_recurrence_verdicts_matched": true,
+      "all_audits_normalized_without_diagnostics": true
+    }
+  },
+  "live": {
+    "provider_family": "openai-compatible",
+    "model": "glm-5",
+    "trials": 9,
+    "valid_trials": 9,
+    "classifications": {
+      "solved": 9
+    },
+    "cycle_incidence": 0.0,
+    "solve_rate": 1.0,
+    "premature_completion_rate": 0.0,
+    "ambiguous_trials": 0,
+    "cycle_intervention_contexts": 0,
+    "by_condition": {
+      "baseline_identity": {
+        "trials": 3,
+        "solved": 3,
+        "median_turns": 8,
+        "median_tool_calls": 12,
+        "median_total_tokens": 27226,
+        "median_elapsed_seconds": 57.904522
+      },
+      "state_progress_projection": {
+        "trials": 3,
+        "solved": 3,
+        "median_turns": 6,
+        "median_tool_calls": 11,
+        "median_total_tokens": 19608,
+        "median_elapsed_seconds": 50.794789
+      },
+      "confirmed_cycle_intervention": {
+        "trials": 3,
+        "solved": 3,
+        "median_turns": 5,
+        "median_tool_calls": 10,
+        "median_total_tokens": 14416,
+        "median_elapsed_seconds": 41.339008
+      }
+    }
+  },
+  "raw_artifacts": {
+    "/tmp/ejagent-trajectory-local.json": {
+      "sha256": "3205fa5ee54867120396e35bc4833586307169623334f0091d637d26935db981",
+      "bytes": 72020
+    },
+    "/tmp/ejagent-trajectory-live.json": {
+      "sha256": "2091dd3dc40d06fa54d7110aaa45488263ebee04ae8f11eb6fb49ef419bbe891",
+      "bytes": 3761620,
+      "api_key_present": false,
+      "base_url_present": false
+    },
+    "/tmp/ejagent-trajectory-live-shadow.json": {
+      "sha256": "1c304a83c77556cd7e2856e6401c8fb7a182f1751f1e371b45c17e8df959dfc8",
+      "bytes": 2692
+    }
+  }
+}

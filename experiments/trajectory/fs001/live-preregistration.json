@@ -1,0 +1,56 @@
+{
+  "protocol_version": "fs001-live-v1",
+  "registered_before_execution": true,
+  "provider_family": "openai-compatible",
+  "model": "glm-5",
+  "generation": {
+    "temperature": 0.7,
+    "timeout_seconds_per_request": 30,
+    "include_usage": true
+  },
+  "run_limits": {
+    "max_turns": 10,
+    "max_repeated_tool_calls": 3,
+    "trial_timeout_seconds": 240
+  },
+  "trials_per_condition": 3,
+  "context_conditions": [
+    "baseline_identity",
+    "state_progress_projection",
+    "confirmed_cycle_intervention"
+  ],
+  "system_message": "You are an autonomous coding agent operating only inside an isolated authentication fixture. Inspect relevant source and tests before editing. Use the provided tools, preserve the public API and token payload compatibility, and only claim completion after the complete verifier reports R1, R2, and C1 passing. Do not ask the user to perform steps.",
+  "task_message": "Fix the authentication fixture so expired access tokens are rejected by the protected-resource path while the valid refresh-token flow remains functional. Preserve the public function signatures and token payload shape.",
+  "tools": [
+    {
+      "name": "read_file",
+      "description": "Read one allowed fixture source, test, or probe file."
+    },
+    {
+      "name": "write_file",
+      "description": "Replace the complete contents of one allowed fixture source file."
+    },
+    {
+      "name": "run_verifier",
+      "description": "Run one focused verifier or the complete frozen verifier set."
+    },
+    {
+      "name": "inspect_diff",
+      "description": "Inspect the bounded source diff from the frozen fixture baseline."
+    }
+  ],
+  "checkpoint_policy": "out-of-band V-ALL after every source mutation and once at terminal audit",
+  "baseline_visibility": "Evaluator checkpoints are not exposed to the model.",
+  "state_progress_visibility": "Before every model request, expose current R1/R2/C1 facts, current/best coverage, regression, new evidence, and provenance; never expose the state fingerprint.",
+  "cycle_visibility": "Use the state/progress projection and, only after the offline oracle confirms recurrence, expose compared checkpoints, repeated no-progress status, and a request to replan from the goal.",
+  "classification_precedence": [
+    "solved",
+    "infrastructure_failure",
+    "protocol_failure",
+    "causally_ambiguous",
+    "non_progress_cycle",
+    "premature_completion",
+    "max_steps_without_cycle",
+    "cancelled"
+  ]
+}
