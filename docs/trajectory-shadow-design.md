@@ -13,8 +13,15 @@ and the evidence established by the
 
 ## Module and Interface
 
-`ShadowTrajectoryAnalyzer` is the deep module. Its external Interface is one
-pure operation:
+`ShadowTrajectoryAnalyzer` is the deep assessment module. It now has a pure
+online operation that does not require a terminal Run:
+
+```python
+assessment = analyzer.assess(environment_checkpoints)
+```
+
+The terminal Shadow adapter enriches the same Assessment with normalized
+Audit Actions and Observations:
 
 ```python
 report = analyzer.analyze(run_audit, environment_checkpoints)
@@ -79,14 +86,25 @@ also have equal:
 
 Causally incomplete checkpoints cannot prove recurrence.
 
-### Progress
+### Progress and cost
 
 Requirement coverage is derived from the vector but does not replace it.
 Every snapshot retains Requirements gained and regressed independently. An
 empty Constraint set is valid; an empty Requirement set is not.
 
+`requirement_coverage_delta` is the raw scalar coverage change.
+`task_progress_delta` is only numeric while every Constraint is satisfied; it
+is `None` while the Goal is blocked by a false or unresolved Constraint.
+`ProgressStatus` supplies the task-level interpretation. A newly violated
+Constraint or lost Requirement is `regressed`, even if raw Requirement
+coverage increased in the same transition.
+
 `new_evidence` is supplied by the host evaluator. Audit activity or model
 narration is never promoted to Epistemic Progress automatically.
+
+Each Checkpoint may carry cumulative Actor Action, model request, token, and
+elapsed-time cost. The Progress Snapshot derives the non-negative difference
+from the previous Checkpoint and fails closed on regressing counters.
 
 ### Cycle thresholds
 
@@ -125,12 +143,15 @@ experiment adapter. They cover:
 - differential agreement with the frozen experiment oracle;
 - replay of all nine pre-registered live trial Audits.
 
+The same suite also crosses `assess(checkpoints)` directly and proves that its
+cycle result agrees with the terminal report, so Runtime integration does not
+need to manufacture a partial `RunAudit`.
+
 ## Current non-goals
 
 - no additions to stable `ejagent.contracts`;
 - no top-level public export;
-- no in-Run checkpoint hook;
-- no Context projection;
+- no default-on Runtime hook or Context projection;
 - no Completion Audit enforcement;
 - no Action denial, replan, cancellation, or Run termination;
 - no universal State Fingerprint or Fact persistence schema.
@@ -166,3 +187,12 @@ The resulting opt-in model-facing module is specified in
 [`trajectory-context-projection.md`](trajectory-context-projection.md). Shadow
 reports remain measurement output; the new Context adapter consumes a separate
 host-owned frame and does not give the after-commit Observer in-Run authority.
+
+## Runtime-readiness resolution
+
+`OnlineTrajectoryMonitor` serializes Checkpoint capture per Run, delegates
+fresh truth to a host `CheckpointEvaluator`, assesses the result immediately,
+maps it to a Context event, and exposes explicit lifecycle cleanup. The first
+opt-in Kernel wiring now crosses a stable, Runtime-owned observation seam; the
+readiness evidence and implemented insertion points are documented in
+[`trajectory-runtime-readiness.md`](trajectory-runtime-readiness.md).

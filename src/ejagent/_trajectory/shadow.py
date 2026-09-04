@@ -14,6 +14,7 @@ from ejagent.contracts.json import (
     freeze_json_value,
 )
 from ejagent.contracts.runs import AuditRecord, RunStatus, StopReason
+from ejagent.kernel.trajectory import TrajectoryCost
 
 
 class TrajectoryVerdict(StrEnum):
@@ -24,6 +25,16 @@ class TrajectoryVerdict(StrEnum):
     NO_CYCLE = "no_cycle"
     CYCLE_SUSPECTED = "cycle_suspected"
     NON_PROGRESS_CYCLE = "non_progress_cycle"
+
+
+class ProgressStatus(StrEnum):
+    """Constraint-aware interpretation of one Progress Delta."""
+
+    UNCHANGED = "unchanged"
+    EVIDENCE_GAINED = "evidence_gained"
+    ADVANCED = "advanced"
+    BLOCKED = "blocked"
+    REGRESSED = "regressed"
 
 
 class FactValidity(StrEnum):
@@ -169,11 +180,16 @@ class TrajectoryCheckpoint:
     causal_batch_id: str | None = None
     unattributed_action_ids: tuple[str, ...] = ()
     causal_exclusion_reason: str | None = None
+    cumulative_cost: TrajectoryCost | None = None
+    turn: int = 0
+    capture_trigger: str = "legacy"
 
     def __post_init__(self) -> None:
         _required_text(self.checkpoint_id, "checkpoint_id")
         _required_text(self.projection_version, "projection_version")
         _required_text(self.state_fingerprint, "state_fingerprint")
+        _non_negative_integer(self.turn, "checkpoint turn")
+        _required_text(self.capture_trigger, "capture_trigger")
         object.__setattr__(
             self,
             "environment_facts",
@@ -243,6 +259,16 @@ class TrajectoryCheckpoint:
             _required_text(
                 self.causal_exclusion_reason,
                 "causal_exclusion_reason",
+            )
+        cost = self.cumulative_cost
+        if cost is None:
+            cost = TrajectoryCost(actor_actions=self.actor_action_count)
+            object.__setattr__(self, "cumulative_cost", cost)
+        elif not isinstance(cost, TrajectoryCost):
+            raise TypeError("cumulative_cost must be a TrajectoryCost or None")
+        elif cost.actor_actions != self.actor_action_count:
+            raise ValueError(
+                "cumulative_cost actor_actions must match actor_action_count"
             )
 
     @property
@@ -318,11 +344,18 @@ class ProgressSnapshot:
     constraints: Mapping[str, bool | None]
     current_requirement_coverage: float
     best_requirement_coverage: float
-    task_progress_delta: float
+    requirement_coverage_delta: float
+    task_progress_delta: float | None
+    status: ProgressStatus
     gained_requirements: tuple[str, ...]
     regressed_requirements: tuple[str, ...]
+    violated_constraints: tuple[str, ...]
+    unresolved_constraints: tuple[str, ...]
+    newly_violated_constraints: tuple[str, ...]
+    recovered_constraints: tuple[str, ...]
     new_evidence: tuple[str, ...]
     actor_actions_since_previous: int
+    cost_since_previous: TrajectoryCost
 
     def __post_init__(self) -> None:
         _required_text(self.checkpoint_id, "checkpoint_id")
@@ -340,6 +373,24 @@ class ProgressSnapshot:
                 allow_empty=True,
             ),
         )
+        if not isinstance(self.status, ProgressStatus):
+            raise TypeError("progress status must be a ProgressStatus")
+        if not isinstance(self.cost_since_previous, TrajectoryCost):
+            raise TypeError("cost_since_previous must be a TrajectoryCost")
+
+
+@dataclass(frozen=True, slots=True)
+class TrajectoryAssessment:
+    """Online assessment derived only from immutable Checkpoints."""
+
+    verdict: TrajectoryVerdict
+    period: int | None
+    candidate_checkpoint_ids: tuple[str, ...]
+    repeated_action_path: bool
+    repeated_action_signatures: tuple[str, ...]
+    task_progress_over_repeated_window: float | None
+    progress: tuple[ProgressSnapshot, ...]
+    diagnostics: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -359,6 +410,7 @@ class TrajectoryReport:
     period: int | None
     candidate_checkpoint_ids: tuple[str, ...]
     repeated_action_path: bool
+    repeated_action_signatures: tuple[str, ...]
     task_progress_over_repeated_window: float | None
     actions: tuple[NormalizedAction, ...]
     observations: tuple[NormalizedObservation, ...]
@@ -531,6 +583,52 @@ def _coverage(requirements: Mapping[str, bool | None]) -> float:
     return sum(value is True for value in requirements.values()) / len(requirements)
 
 
+def _cost_delta(
+    current: TrajectoryCost,
+    previous: TrajectoryCost,
+    *,
+    checkpoint_id: str,
+    diagnostics: list[str],
+) -> TrajectoryCost:
+    def delta(name: str, value: int | None, prior: int | None) -> int | None:
+        if value is None:
+            return None
+        if prior is None:
+            return value
+        difference = value - prior
+        if difference < 0:
+            diagnostics.append(
+                f"checkpoint:{checkpoint_id}:cumulative {name} regressed"
+            )
+            return 0
+        return difference
+
+    return TrajectoryCost(
+        actor_actions=delta(
+            "actor action count",
+            current.actor_actions,
+            previous.actor_actions,
+        )
+        or 0,
+        model_requests=delta(
+            "model request count",
+            current.model_requests,
+            previous.model_requests,
+        )
+        or 0,
+        total_tokens=delta(
+            "total token count",
+            current.total_tokens,
+            previous.total_tokens,
+        ),
+        elapsed_ms=delta(
+            "elapsed time",
+            current.elapsed_ms,
+            previous.elapsed_ms,
+        ),
+    )
+
+
 def _progress(
     checkpoints: tuple[TrajectoryCheckpoint, ...],
 ) -> tuple[tuple[ProgressSnapshot, ...], tuple[str, ...]]:
@@ -539,8 +637,9 @@ def _progress(
     expected_requirements = tuple(checkpoints[0].requirements)
     expected_constraints = tuple(checkpoints[0].constraints)
     previous_requirements: Mapping[str, bool | None] | None = None
+    previous_constraints: Mapping[str, bool | None] | None = None
     previous_coverage: float | None = None
-    previous_action_count = 0
+    previous_cost = TrajectoryCost()
     best_coverage = 0.0
     for checkpoint in checkpoints:
         if tuple(checkpoint.requirements) != expected_requirements:
@@ -551,13 +650,18 @@ def _progress(
             diagnostics.append(
                 f"checkpoint:{checkpoint.checkpoint_id}:constraint schema changed"
             )
-        action_delta = checkpoint.actor_action_count - previous_action_count
-        if action_delta < 0:
-            diagnostics.append(
-                f"checkpoint:{checkpoint.checkpoint_id}:actor action count regressed"
-            )
-            action_delta = 0
+        cost = checkpoint.cumulative_cost
+        assert cost is not None
+        cost_delta = _cost_delta(
+            cost,
+            previous_cost,
+            checkpoint_id=checkpoint.checkpoint_id,
+            diagnostics=diagnostics,
+        )
         coverage = _coverage(checkpoint.requirements)
+        requirement_delta = (
+            0.0 if previous_coverage is None else coverage - previous_coverage
+        )
         gained: tuple[str, ...] = ()
         regressed: tuple[str, ...] = ()
         if previous_requirements is not None:
@@ -571,6 +675,35 @@ def _progress(
                 for name, verdict in checkpoint.requirements.items()
                 if verdict is not True and previous_requirements.get(name) is True
             )
+        violated = tuple(
+            name for name, verdict in checkpoint.constraints.items() if verdict is False
+        )
+        unresolved = tuple(
+            name for name, verdict in checkpoint.constraints.items() if verdict is None
+        )
+        newly_violated: tuple[str, ...] = ()
+        recovered: tuple[str, ...] = ()
+        if previous_constraints is not None:
+            newly_violated = tuple(
+                name
+                for name, verdict in checkpoint.constraints.items()
+                if verdict is False and previous_constraints.get(name) is not False
+            )
+            recovered = tuple(
+                name
+                for name, verdict in checkpoint.constraints.items()
+                if verdict is True and previous_constraints.get(name) is not True
+            )
+        if regressed or newly_violated:
+            status = ProgressStatus.REGRESSED
+        elif violated or unresolved:
+            status = ProgressStatus.BLOCKED
+        elif requirement_delta > 0:
+            status = ProgressStatus.ADVANCED
+        elif checkpoint.new_evidence:
+            status = ProgressStatus.EVIDENCE_GAINED
+        else:
+            status = ProgressStatus.UNCHANGED
         best_coverage = max(best_coverage, coverage)
         snapshots.append(
             ProgressSnapshot(
@@ -579,18 +712,26 @@ def _progress(
                 constraints=checkpoint.constraints,
                 current_requirement_coverage=coverage,
                 best_requirement_coverage=best_coverage,
+                requirement_coverage_delta=requirement_delta,
                 task_progress_delta=(
-                    0.0 if previous_coverage is None else coverage - previous_coverage
+                    requirement_delta if not violated and not unresolved else None
                 ),
+                status=status,
                 gained_requirements=gained,
                 regressed_requirements=regressed,
+                violated_constraints=violated,
+                unresolved_constraints=unresolved,
+                newly_violated_constraints=newly_violated,
+                recovered_constraints=recovered,
                 new_evidence=checkpoint.new_evidence,
-                actor_actions_since_previous=action_delta,
+                actor_actions_since_previous=cost_delta.actor_actions,
+                cost_since_previous=cost_delta,
             )
         )
         previous_requirements = checkpoint.requirements
+        previous_constraints = checkpoint.constraints
         previous_coverage = coverage
-        previous_action_count = checkpoint.actor_action_count
+        previous_cost = cost
     return tuple(snapshots), tuple(diagnostics)
 
 
@@ -655,44 +796,99 @@ class ShadowTrajectoryAnalyzer:
     ) -> TrajectoryReport:
         if not isinstance(audit, RunAudit):
             raise TypeError("audit must be a RunAudit")
+        assessment = self.assess(checkpoints)
+        actions, observations, audit_diagnostics = _normalize_audit(audit.records)
+        return self._report(
+            audit,
+            assessment,
+            actions,
+            observations,
+            audit_diagnostics,
+        )
+
+    def assess(
+        self,
+        checkpoints: Iterable[TrajectoryCheckpoint],
+    ) -> TrajectoryAssessment:
+        """Assess Checkpoints before a Run has reached a terminal audit State."""
+
         checkpoint_values = tuple(checkpoints)
         if not all(
             isinstance(item, TrajectoryCheckpoint) for item in checkpoint_values
         ):
             raise TypeError("checkpoints must contain TrajectoryCheckpoint values")
-        actions, observations, audit_diagnostics = _normalize_audit(audit.records)
         if not checkpoint_values:
-            return self._report(
-                audit,
-                TrajectoryVerdict.INSUFFICIENT_EVIDENCE,
-                actions,
-                observations,
-                (),
-                audit_diagnostics + ("no environment checkpoints",),
+            return TrajectoryAssessment(
+                verdict=TrajectoryVerdict.INSUFFICIENT_EVIDENCE,
+                period=None,
+                candidate_checkpoint_ids=(),
+                repeated_action_path=False,
+                repeated_action_signatures=(),
+                task_progress_over_repeated_window=None,
+                progress=(),
+                diagnostics=("no environment checkpoints",),
             )
         progress, checkpoint_diagnostics = _progress(checkpoint_values)
-        fact_diagnostics = _fact_diagnostics(checkpoint_values)
-        diagnostics = audit_diagnostics + checkpoint_diagnostics + fact_diagnostics
+        fact_diagnostics = _fact_diagnostics(checkpoint_values[-1:])
+        diagnostics = checkpoint_diagnostics + fact_diagnostics
         if checkpoint_diagnostics or fact_diagnostics:
-            return self._report(
-                audit,
-                TrajectoryVerdict.INSUFFICIENT_EVIDENCE,
-                actions,
-                observations,
-                progress,
-                diagnostics,
+            return TrajectoryAssessment(
+                verdict=TrajectoryVerdict.INSUFFICIENT_EVIDENCE,
+                period=None,
+                candidate_checkpoint_ids=(),
+                repeated_action_path=False,
+                repeated_action_signatures=(),
+                task_progress_over_repeated_window=None,
+                progress=progress,
+                diagnostics=diagnostics,
             )
-        incomplete = tuple(
-            item for item in checkpoint_values if not item.causally_complete
-        )
+        confirmed = self._confirmed_cycle(checkpoint_values, progress)
+        if confirmed is not None:
+            period, candidates, task_progress = confirmed
+            return TrajectoryAssessment(
+                verdict=TrajectoryVerdict.NON_PROGRESS_CYCLE,
+                period=period,
+                candidate_checkpoint_ids=tuple(
+                    item.checkpoint_id for item in candidates
+                ),
+                repeated_action_path=True,
+                repeated_action_signatures=tuple(
+                    signature
+                    for checkpoint in candidates[-period:]
+                    for signature in checkpoint.causal_action_signatures
+                ),
+                task_progress_over_repeated_window=task_progress,
+                progress=progress,
+                diagnostics=diagnostics,
+            )
+        suspected = self._suspected_cycle(checkpoint_values, progress)
+        if suspected is not None:
+            period, candidates, task_progress = suspected
+            return TrajectoryAssessment(
+                verdict=TrajectoryVerdict.CYCLE_SUSPECTED,
+                period=period,
+                candidate_checkpoint_ids=tuple(
+                    item.checkpoint_id for item in candidates
+                ),
+                repeated_action_path=False,
+                repeated_action_signatures=(),
+                task_progress_over_repeated_window=task_progress,
+                progress=progress,
+                diagnostics=diagnostics,
+            )
+        incomplete = self._ambiguous_cycle(checkpoint_values)
         if incomplete:
-            return self._report(
-                audit,
-                TrajectoryVerdict.CAUSALLY_AMBIGUOUS,
-                actions,
-                observations,
-                progress,
-                diagnostics
+            return TrajectoryAssessment(
+                verdict=TrajectoryVerdict.CAUSALLY_AMBIGUOUS,
+                period=None,
+                candidate_checkpoint_ids=tuple(
+                    item.checkpoint_id for item in incomplete
+                ),
+                repeated_action_path=False,
+                repeated_action_signatures=(),
+                task_progress_over_repeated_window=None,
+                progress=progress,
+                diagnostics=diagnostics
                 + tuple(
                     (
                         f"checkpoint:{item.checkpoint_id}:causal attribution incomplete: "
@@ -700,53 +896,23 @@ class ShadowTrajectoryAnalyzer:
                     )
                     for item in incomplete
                 ),
-                candidates=incomplete,
             )
-
-        confirmed = self._confirmed_cycle(checkpoint_values, progress)
-        if confirmed is not None:
-            period, candidates, task_progress = confirmed
-            return self._report(
-                audit,
-                TrajectoryVerdict.NON_PROGRESS_CYCLE,
-                actions,
-                observations,
-                progress,
-                diagnostics,
-                period=period,
-                candidates=candidates,
-                repeated_action_path=True,
-                task_progress=task_progress,
-            )
-        suspected = self._suspected_cycle(checkpoint_values, progress)
-        if suspected is not None:
-            period, candidates, task_progress = suspected
-            return self._report(
-                audit,
-                TrajectoryVerdict.CYCLE_SUSPECTED,
-                actions,
-                observations,
-                progress,
-                diagnostics,
-                period=period,
-                candidates=candidates,
-                repeated_action_path=False,
-                task_progress=task_progress,
-            )
-        return self._report(
-            audit,
-            TrajectoryVerdict.NO_CYCLE,
-            actions,
-            observations,
-            progress,
-            diagnostics,
+        return TrajectoryAssessment(
+            verdict=TrajectoryVerdict.NO_CYCLE,
+            period=None,
+            candidate_checkpoint_ids=(),
+            repeated_action_path=False,
+            repeated_action_signatures=(),
+            task_progress_over_repeated_window=None,
+            progress=progress,
+            diagnostics=diagnostics,
         )
 
     def _confirmed_cycle(
         self,
         checkpoints: tuple[TrajectoryCheckpoint, ...],
         progress: tuple[ProgressSnapshot, ...],
-    ) -> tuple[int, tuple[TrajectoryCheckpoint, ...], float] | None:
+    ) -> tuple[int, tuple[TrajectoryCheckpoint, ...], float | None] | None:
         transitions = [item.causal_action_signatures for item in checkpoints[1:]]
         for period in range(1, self._max_period + 1):
             window_size = period * 2 + 1
@@ -766,11 +932,20 @@ class ShadowTrajectoryAnalyzer:
             ):
                 continue
             repeated_progress = progress[-period:]
-            task_progress = sum(item.task_progress_delta for item in repeated_progress)
+            requirement_progress = sum(
+                item.requirement_coverage_delta for item in repeated_progress
+            )
+            task_deltas = tuple(item.task_progress_delta for item in repeated_progress)
+            task_progress = (
+                None
+                if any(item is None for item in task_deltas)
+                else sum(item for item in task_deltas if item is not None)
+            )
             best_before_repeat = progress[-period - 1].best_requirement_coverage
             if (
                 all(item.causally_complete for item in candidates)
-                and task_progress <= 0
+                and not _fact_diagnostics(candidates)
+                and requirement_progress <= 0
                 and progress[-1].best_requirement_coverage <= best_before_repeat
                 and all(not item.new_evidence for item in repeated_progress)
                 and sum(item.actor_actions_since_previous for item in repeated_progress)
@@ -783,7 +958,7 @@ class ShadowTrajectoryAnalyzer:
         self,
         checkpoints: tuple[TrajectoryCheckpoint, ...],
         progress: tuple[ProgressSnapshot, ...],
-    ) -> tuple[int, tuple[TrajectoryCheckpoint, ...], float] | None:
+    ) -> tuple[int, tuple[TrajectoryCheckpoint, ...], float | None] | None:
         for period in range(1, self._max_period + 1):
             window_size = period * 2
             if len(checkpoints) < window_size:
@@ -795,10 +970,19 @@ class ShadowTrajectoryAnalyzer:
             ):
                 continue
             repeated_progress = progress[-period:]
-            task_progress = sum(item.task_progress_delta for item in repeated_progress)
+            requirement_progress = sum(
+                item.requirement_coverage_delta for item in repeated_progress
+            )
+            task_deltas = tuple(item.task_progress_delta for item in repeated_progress)
+            task_progress = (
+                None
+                if any(item is None for item in task_deltas)
+                else sum(item for item in task_deltas if item is not None)
+            )
             if (
                 all(item.causally_complete for item in candidates)
-                and task_progress <= 0
+                and not _fact_diagnostics(candidates)
+                and requirement_progress <= 0
                 and all(not item.new_evidence for item in repeated_progress)
                 and sum(item.actor_actions_since_previous for item in repeated_progress)
                 > 0
@@ -806,19 +990,35 @@ class ShadowTrajectoryAnalyzer:
                 return period, candidates, task_progress
         return None
 
+    def _ambiguous_cycle(
+        self,
+        checkpoints: tuple[TrajectoryCheckpoint, ...],
+    ) -> tuple[TrajectoryCheckpoint, ...]:
+        for period in range(1, self._max_period + 1):
+            for window_size in (period * 2 + 1, period * 2):
+                if len(checkpoints) < window_size:
+                    continue
+                candidates = checkpoints[-window_size:]
+                comparisons = period + 1 if window_size % 2 else period
+                if not all(
+                    _equivalent(candidates[offset], candidates[period + offset])
+                    for offset in range(comparisons)
+                ):
+                    continue
+                incomplete = tuple(
+                    item for item in candidates if not item.causally_complete
+                )
+                if incomplete:
+                    return incomplete
+        return ()
+
     @staticmethod
     def _report(
         audit: RunAudit,
-        verdict: TrajectoryVerdict,
+        assessment: TrajectoryAssessment,
         actions: tuple[NormalizedAction, ...],
         observations: tuple[NormalizedObservation, ...],
-        progress: tuple[ProgressSnapshot, ...],
-        diagnostics: tuple[str, ...],
-        *,
-        period: int | None = None,
-        candidates: tuple[TrajectoryCheckpoint, ...] = (),
-        repeated_action_path: bool = False,
-        task_progress: float | None = None,
+        audit_diagnostics: tuple[str, ...],
     ) -> TrajectoryReport:
         return TrajectoryReport(
             run_id=audit.run_id,
@@ -830,15 +1030,18 @@ class ShadowTrajectoryAnalyzer:
             turns=audit.result.turns,
             total_tokens=audit.result.usage.total_tokens,
             request_count=audit.result.usage.request_count,
-            verdict=verdict,
-            period=period,
-            candidate_checkpoint_ids=tuple(item.checkpoint_id for item in candidates),
-            repeated_action_path=repeated_action_path,
-            task_progress_over_repeated_window=task_progress,
+            verdict=assessment.verdict,
+            period=assessment.period,
+            candidate_checkpoint_ids=assessment.candidate_checkpoint_ids,
+            repeated_action_path=assessment.repeated_action_path,
+            repeated_action_signatures=assessment.repeated_action_signatures,
+            task_progress_over_repeated_window=(
+                assessment.task_progress_over_repeated_window
+            ),
             actions=actions,
             observations=observations,
-            progress=progress,
-            diagnostics=diagnostics,
+            progress=assessment.progress,
+            diagnostics=audit_diagnostics + assessment.diagnostics,
         )
 
 

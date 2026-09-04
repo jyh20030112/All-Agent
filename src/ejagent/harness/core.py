@@ -50,7 +50,7 @@ from ejagent.harness._control import (
     _QueuedFollowUp,
     _RunControls,
 )
-from ejagent.kernel import RuntimeKernel
+from ejagent.kernel import RuntimeKernel, TrajectoryMonitor
 
 RunIdFactory = Callable[[], str]
 Clock = Callable[[], datetime]
@@ -89,6 +89,7 @@ class AgentHarness:
         model: ModelPort,
         tools: ToolExecutor,
         context: ContextPipeline | None = None,
+        trajectory: TrajectoryMonitor | None = None,
         initial_messages: Iterable[ConversationMessage] = (),
         store: SessionStore | None = None,
         observers: Iterable[RunObserver] = (),
@@ -139,6 +140,7 @@ class AgentHarness:
             model=model,
             tools=tools,
             context=context,
+            trajectory=trajectory,
             clock=self._clock,
         )
         self._resources = self._managed_resources(

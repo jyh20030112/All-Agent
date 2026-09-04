@@ -110,6 +110,18 @@ A named boundary at which the environment is observed and a State may be
 compared or evaluated.
 _Avoid_: Turn, arbitrary timestamp
 
+**Checkpoint Trigger**:
+A semantic Runtime boundary that requires a fresh Checkpoint, such as Run
+baseline, completed Action batch, verification, external change, or Completion
+Claim.
+_Avoid_: Every Audit event, timer tick
+
+**Causal Batch**:
+The complete set of Actions whose effects are jointly evaluated by one
+post-batch Checkpoint, including concurrent Actions whose individual effects
+cannot safely be separated.
+_Avoid_: Tool completion order, arbitrary Action window
+
 **Decision Boundary**:
 A point at which the Actor may choose another Action and therefore may need a
 fresh Context projection.
@@ -145,6 +157,16 @@ _Avoid_: Single completion percentage
 **Progress Delta**:
 The assessed change between two Progress Snapshots.
 _Avoid_: State Delta
+
+**Progress Status**:
+The Constraint-aware interpretation of a Progress Delta: advanced, evidence
+gained, blocked, regressed, or unchanged.
+_Avoid_: Requirement coverage alone
+
+**Trajectory Cost**:
+Cumulative measurable Actor Actions, model requests, tokens, and elapsed time
+at a Checkpoint, from which per-Checkpoint cost is derived.
+_Avoid_: Value judgment, estimated difficulty
 
 **Regression**:
 The loss of previously verified Requirement satisfaction or the introduction

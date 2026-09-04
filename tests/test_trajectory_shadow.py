@@ -8,9 +8,11 @@ from ejagent import AgentHarness, FunctionToolExecutor
 from ejagent._trajectory import (
     EnvironmentFact,
     FactValidity,
+    ProgressStatus,
     ShadowTrajectoryAnalyzer,
     ShadowTrajectoryObserver,
     TrajectoryCheckpoint,
+    TrajectoryCost,
     TrajectoryVerdict,
 )
 from ejagent.contracts import (
@@ -194,6 +196,70 @@ class ShadowTrajectoryAnalyzerTests(unittest.TestCase):
         self.assertTrue(confirmed.repeated_action_path)
         self.assertEqual(confirmed.task_progress_over_repeated_window, 0.0)
         self.assertEqual(confirmed.progress[-1].regressed_requirements, ("R1",))
+
+    def test_online_assessment_does_not_require_a_terminal_run_audit(self) -> None:
+        checkpoints = (
+            _checkpoint(0, "same", requirements={"R1": False}),
+            _checkpoint(1, "same", requirements={"R1": False}, action="retry"),
+            _checkpoint(2, "same", requirements={"R1": False}, action="retry"),
+        )
+
+        assessment = self.analyzer.assess(checkpoints)
+        report = self.analyzer.analyze(_audit(), checkpoints)
+
+        self.assertEqual(assessment.verdict, TrajectoryVerdict.NON_PROGRESS_CYCLE)
+        self.assertEqual(assessment.verdict, report.verdict)
+        self.assertEqual(assessment.progress, report.progress)
+        self.assertEqual(
+            assessment.candidate_checkpoint_ids,
+            report.candidate_checkpoint_ids,
+        )
+
+    def test_requirement_gain_is_not_task_progress_when_constraint_regresses(
+        self,
+    ) -> None:
+        baseline = TrajectoryCheckpoint(
+            checkpoint_id="cp0",
+            projection_version="test-v1",
+            state_fingerprint="S0",
+            environment_facts={"state": "S0"},
+            requirements={"R1": False},
+            constraints={"C1": True},
+            cumulative_cost=TrajectoryCost(
+                actor_actions=0,
+                model_requests=0,
+                total_tokens=0,
+                elapsed_ms=0,
+            ),
+        )
+        regressed = TrajectoryCheckpoint(
+            checkpoint_id="cp1",
+            projection_version="test-v1",
+            state_fingerprint="S1",
+            environment_facts={"state": "S1"},
+            requirements={"R1": True},
+            constraints={"C1": False},
+            actor_action_count=1,
+            causal_action_signatures=("edit",),
+            cumulative_cost=TrajectoryCost(
+                actor_actions=1,
+                model_requests=1,
+                total_tokens=12,
+                elapsed_ms=25,
+            ),
+        )
+
+        progress = self.analyzer.assess((baseline, regressed)).progress[-1]
+
+        self.assertEqual(progress.requirement_coverage_delta, 1.0)
+        self.assertIsNone(progress.task_progress_delta)
+        self.assertEqual(progress.status, ProgressStatus.REGRESSED)
+        self.assertEqual(progress.newly_violated_constraints, ("C1",))
+        self.assertEqual(progress.violated_constraints, ("C1",))
+        self.assertEqual(progress.cost_since_previous.actor_actions, 1)
+        self.assertEqual(progress.cost_since_previous.model_requests, 1)
+        self.assertEqual(progress.cost_since_previous.total_tokens, 12)
+        self.assertEqual(progress.cost_since_previous.elapsed_ms, 25)
 
     def test_fingerprint_match_without_equal_facts_cannot_prove_recurrence(
         self,

@@ -287,11 +287,23 @@ class TrajectoryContextProjector:
         return {
             "current_requirement_coverage": progress.current_requirement_coverage,
             "best_requirement_coverage": progress.best_requirement_coverage,
+            "requirement_coverage_delta": progress.requirement_coverage_delta,
             "task_progress_delta": progress.task_progress_delta,
+            "status": progress.status.value,
             "gained_requirements": list(progress.gained_requirements),
             "regressed_requirements": list(progress.regressed_requirements),
+            "violated_constraints": list(progress.violated_constraints),
+            "unresolved_constraints": list(progress.unresolved_constraints),
+            "newly_violated_constraints": list(progress.newly_violated_constraints),
+            "recovered_constraints": list(progress.recovered_constraints),
             "new_evidence": list(progress.new_evidence),
             "actor_actions_since_previous": progress.actor_actions_since_previous,
+            "cost_since_previous": {
+                "actor_actions": progress.cost_since_previous.actor_actions,
+                "model_requests": progress.cost_since_previous.model_requests,
+                "total_tokens": progress.cost_since_previous.total_tokens,
+                "elapsed_ms": progress.cost_since_previous.elapsed_ms,
+            },
         }
 
     @staticmethod
@@ -411,6 +423,29 @@ class TrajectoryContextPipeline(ContextPipeline):
             messages=(*view.messages, projection.instruction),
             metadata=metadata,
         )
+
+
+class TrajectoryContextBuffer:
+    """Mutable host adapter exposing updates at exact decision boundaries."""
+
+    def __init__(self) -> None:
+        self._frames: dict[tuple[str, int], TrajectoryContextFrame] = {}
+
+    def publish(self, frame: TrajectoryContextFrame) -> None:
+        if not isinstance(frame, TrajectoryContextFrame):
+            raise TypeError("frame must be a TrajectoryContextFrame")
+        self._frames[(frame.run_id, frame.turn)] = frame
+
+    def __call__(self, request: ContextRequest) -> TrajectoryContextFrame | None:
+        if not isinstance(request, ContextRequest):
+            raise TypeError("request must be a ContextRequest")
+        return self._frames.get((request.run_id, request.turn))
+
+    def close_run(self, run_id: str) -> tuple[TrajectoryContextFrame, ...]:
+        _required_text(run_id, "run_id")
+        keys = tuple(key for key in self._frames if key[0] == run_id)
+        frames = tuple(self._frames.pop(key) for key in sorted(keys))
+        return frames
 
 
 def immutable_frames(

@@ -1,0 +1,40 @@
+{
+  "all_gates_passed": true,
+  "checkpoint_triggers": [
+    "baseline",
+    "tool_batch_completed",
+    "verification_completed",
+    "external_change",
+    "completion_proposed"
+  ],
+  "enforcement_enabled": false,
+  "evaluation": "trajectory-runtime-integration-v2",
+  "gates": {
+    "all_semantic_checkpoint_boundaries_captured": true,
+    "causal_ambiguity_fails_closed": true,
+    "checkpoint_cost_delta_is_complete": true,
+    "confirmed_cycle_maps_to_context_event": true,
+    "constraint_regression_maps_to_recovery_event": true,
+    "constraint_violation_overrides_requirement_gain": true,
+    "context_is_bound_to_next_decision_only": true,
+    "cycle_suspected_before_confirmation": true,
+    "external_change_requires_explicit_invalidation": true,
+    "failed_completion_continues_same_run": true,
+    "online_assessment_without_terminal_audit": true,
+    "phase2_evidence_remains_green": true,
+    "run_state_has_explicit_lifecycle_close": true,
+    "runtime_captures_declared_boundaries_in_order": true,
+    "runtime_closes_monitor_on_exit": true,
+    "runtime_completion_advice_is_observation_only": true,
+    "runtime_default_path_has_no_trajectory_events": true,
+    "runtime_monitor_failure_is_fail_open": true,
+    "runtime_tool_batch_has_complete_redacted_causality": true,
+    "runtime_uses_stable_trajectory_seam": true,
+    "stable_runtime_layers_do_not_depend_on_internal_trajectory": true,
+    "two_cycles_confirm_non_progress": true,
+    "verified_completion_can_proceed": true
+  },
+  "integration_mode": "Runtime opt-in observation and context projection",
+  "phase2_evidence": "trajectory-phase2-entry-evidence-v1",
+  "runtime_modified": true
+}

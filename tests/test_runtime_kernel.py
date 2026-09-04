@@ -5,10 +5,21 @@ import unittest
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
 
+from ejagent._trajectory import (
+    CheckpointEvaluation,
+    CheckpointEvaluationRequest,
+    CheckpointSignal,
+    CheckpointTrigger,
+    EnvironmentFact,
+    OnlineTrajectoryMonitor,
+    TrajectoryContextBuffer,
+    TrajectoryContextPipeline,
+)
 from ejagent.contracts import (
     AssistantMessage,
     CancellationSource,
     CancellationToken,
+    ContextRequest,
     FailureCode,
     ModelCallError,
     ModelPort,
@@ -33,6 +44,7 @@ from ejagent.contracts import (
     ToolExecutor,
     ToolProtocolError,
     ToolResultMessage,
+    TransientInstruction,
     UserMessage,
     thaw_json_value,
 )
@@ -194,6 +206,65 @@ def lookup_call(call_id: str = "lookup-1") -> ToolCall:
     )
 
 
+class RuntimeTrajectoryEvaluator:
+    def __init__(self) -> None:
+        self.requests: list[CheckpointEvaluationRequest] = []
+
+    async def evaluate(
+        self,
+        request: CheckpointEvaluationRequest,
+        *,
+        cancellation: CancellationToken,
+    ) -> CheckpointEvaluation:
+        cancellation.raise_if_cancelled()
+        self.requests.append(request)
+        trigger = request.signal.trigger
+        state = "s0" if trigger is CheckpointTrigger.BASELINE else "s1"
+        fact = EnvironmentFact(
+            fact_id=f"{request.checkpoint_id}:state",
+            subject="fixture/target",
+            predicate="state",
+            value=state,
+            scope=("R1",),
+            source="runtime-test-verifier",
+            observed_at=fixed_clock(),
+            checkpoint_id=request.checkpoint_id,
+            evidence_ref=f"fixture://{trigger.value}",
+            freshness="valid for this capture",
+            authority="fixture target State only",
+        )
+        return CheckpointEvaluation(
+            projection_version="runtime-test-v1",
+            state_fingerprint=state,
+            environment_facts={"state": state},
+            requirements={"R1": False},
+            constraints={},
+            new_evidence=(trigger.value,),
+            facts=(fact,),
+            fact_capture_complete=True,
+        )
+
+
+class FailingTrajectoryMonitor:
+    def __init__(self) -> None:
+        self.signals: list[CheckpointSignal] = []
+        self.closed_runs: list[str] = []
+
+    async def capture(
+        self,
+        signal: CheckpointSignal,
+        *,
+        cancellation: CancellationToken,
+    ) -> object:
+        cancellation.raise_if_cancelled()
+        self.signals.append(signal)
+        raise RuntimeError("verifier unavailable")
+
+    def close_run(self, run_id: str) -> object:
+        self.closed_runs.append(run_id)
+        return ()
+
+
 class RuntimeKernelTests(unittest.IsolatedAsyncioTestCase):
     async def test_text_run_returns_delta_without_mutating_spec(self) -> None:
         spec = task_spec()
@@ -244,6 +315,139 @@ class RuntimeKernelTests(unittest.IsolatedAsyncioTestCase):
                 "run_finished",
             ],
         )
+
+    async def test_opt_in_trajectory_captures_runtime_boundaries_and_context(
+        self,
+    ) -> None:
+        calls = (lookup_call("lookup-1"), lookup_call("lookup-2"))
+        model = ScriptedModel(
+            [
+                (AssistantMessage(tool_calls=calls), None),
+                (AssistantMessage(content="done"), None),
+            ]
+        )
+        evaluator = RuntimeTrajectoryEvaluator()
+        buffer = TrajectoryContextBuffer()
+        monitor = OnlineTrajectoryMonitor(
+            evaluator,
+            update_sink=lambda update: buffer.publish(
+                update.to_context_frame(
+                    goal="new task",
+                    next_turn=update.signal.turn + 1,
+                )
+            ),
+            run_close_sink=lambda run_id, _checkpoints: buffer.close_run(run_id),
+        )
+        pipeline = TrajectoryContextPipeline(source=buffer)
+        kernel = RuntimeKernel(
+            model=model,
+            tools=RecordingTools((lookup_definition(),)),
+            context=pipeline,
+            trajectory=monitor,
+            clock=fixed_clock,
+        )
+        await pipeline.start()
+        try:
+            outcome = await kernel.run(task_spec())
+        finally:
+            await pipeline.shutdown()
+
+        self.assertEqual(outcome.result.status, RunStatus.COMPLETED)
+        self.assertEqual(
+            [request.signal.trigger for request in evaluator.requests],
+            [
+                CheckpointTrigger.BASELINE,
+                CheckpointTrigger.TOOL_BATCH_COMPLETED,
+                CheckpointTrigger.COMPLETION_PROPOSED,
+            ],
+        )
+        tool_signal = evaluator.requests[1].signal
+        self.assertEqual(tool_signal.turn, 1)
+        self.assertEqual(tool_signal.cumulative_cost.actor_actions, 2)
+        self.assertEqual(tool_signal.cumulative_cost.model_requests, 1)
+        self.assertEqual(tool_signal.causal_batch_id, "turn-1:tool-batch")
+        self.assertEqual(
+            tuple(action.action_id for action in tool_signal.causal_actions),
+            ("lookup-1", "lookup-2"),
+        )
+        self.assertTrue(
+            all(
+                "answer" not in action.signature
+                for action in tool_signal.causal_actions
+            )
+        )
+        trajectory_audit = [
+            record
+            for record in outcome.audit_records
+            if record.kind == "trajectory_checkpointed"
+        ]
+        self.assertEqual(len(trajectory_audit), 3)
+        self.assertFalse(trajectory_audit[-1].payload["completion_allowed"])
+        for request, checkpoint_id in zip(
+            model.requests,
+            ("run-1:cp0", "run-1:cp1"),
+            strict=True,
+        ):
+            projected = tuple(
+                message
+                for message in request.messages
+                if isinstance(message, TransientInstruction)
+            )
+            self.assertEqual(len(projected), 1)
+            self.assertIn(f'"checkpoint":"{checkpoint_id}"', projected[0].content)
+        self.assertEqual(monitor.checkpoints("run-1"), ())
+        self.assertIsNone(
+            buffer(
+                ContextRequest(
+                    run_id="run-1",
+                    source_revision=0,
+                    turn=3,
+                    committed_messages=(SystemMessage("stable"),),
+                )
+            )
+        )
+
+    async def test_trajectory_failure_is_audited_and_does_not_change_result(
+        self,
+    ) -> None:
+        monitor = FailingTrajectoryMonitor()
+        outcome = await RuntimeKernel(
+            model=ScriptedModel([(AssistantMessage(content="done"), None)]),
+            tools=RecordingTools(),
+            trajectory=monitor,
+            clock=fixed_clock,
+        ).run(task_spec())
+
+        self.assertEqual(outcome.result.status, RunStatus.COMPLETED)
+        self.assertEqual(outcome.result.output, "done")
+        self.assertEqual(
+            [signal.trigger for signal in monitor.signals],
+            [CheckpointTrigger.BASELINE],
+        )
+        self.assertEqual(monitor.closed_runs, ["run-1"])
+        failure_records = tuple(
+            record
+            for record in outcome.audit_records
+            if record.kind == "trajectory_capture_failed"
+        )
+        self.assertEqual(len(failure_records), 1)
+        self.assertEqual(failure_records[0].payload["error_type"], "RuntimeError")
+
+    async def test_trajectory_state_closes_when_runtime_protocol_error_escapes(
+        self,
+    ) -> None:
+        monitor = OnlineTrajectoryMonitor(RuntimeTrajectoryEvaluator())
+        kernel = RuntimeKernel(
+            model=IncompleteModel(),
+            tools=RecordingTools(),
+            trajectory=monitor,
+            clock=fixed_clock,
+        )
+
+        with self.assertRaises(ModelProtocolError):
+            await kernel.run(task_spec())
+
+        self.assertEqual(monitor.checkpoints("run-1"), ())
 
     async def test_tool_result_is_committed_before_the_next_model_request(
         self,

@@ -10,11 +10,13 @@ from ejagent._trajectory import (
     EnvironmentFact,
     FactValidity,
     ProgressSnapshot,
+    ProgressStatus,
     TrajectoryCheckpoint,
     TrajectoryContextEvent,
     TrajectoryContextEventKind,
     TrajectoryContextFrame,
     TrajectoryContextPipeline,
+    TrajectoryCost,
 )
 from ejagent.contracts import (
     AssistantMessage,
@@ -99,11 +101,18 @@ def _progress() -> ProgressSnapshot:
         constraints={"C-availability": True},
         current_requirement_coverage=0.5,
         best_requirement_coverage=0.5,
+        requirement_coverage_delta=0.0,
         task_progress_delta=0.0,
+        status=ProgressStatus.REGRESSED,
         gained_requirements=(),
         regressed_requirements=("R-route",),
+        violated_constraints=(),
+        unresolved_constraints=(),
+        newly_violated_constraints=(),
+        recovered_constraints=(),
         new_evidence=("health probe remained green",),
         actor_actions_since_previous=1,
+        cost_since_previous=TrajectoryCost(actor_actions=1),
     )
 
 

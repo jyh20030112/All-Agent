@@ -139,8 +139,10 @@ Run、丢弃排队 follow-up、等待 observer，然后反向关闭资源。
 
 ## 5. `RuntimeKernel`：一次 Model–Tool 事务
 
-`RuntimeKernel(model, tools, context=None, clock=None)` 没有 Session 和资源生命周期。
-它只接受 `RunSpec`，返回 `RunOutcome`。内部三个关键类均为私有实现：
+`RuntimeKernel(model, tools, context=None, trajectory=None, clock=None,
+monotonic_clock=None)` 没有 Session 和资源生命周期。它只接受 `RunSpec`，返回
+`RunOutcome`。`trajectory` 是显式启用、仅观测且 fail-open 的可选边界；为空时不
+改变原有 Audit 与结果。内部三个关键类均为私有实现：
 
 - `_RunWorkspace`：保存本 Run 的可变消息、Delta、turn、工具调用 ID 和重复调用计数。
 - `_UsageAccumulator`：聚合多次模型请求的 token，并记录有多少请求提供了 usage。

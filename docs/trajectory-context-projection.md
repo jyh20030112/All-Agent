@@ -45,8 +45,16 @@ RuntimeKernel._build_context
   -> next model request
 ```
 
-RuntimeKernel depends only on the stable `ContextPipeline` Interface and has no
-dependency on trajectory detection.
+RuntimeKernel depends on the stable `ContextPipeline` and optional
+`TrajectoryMonitor` Interfaces, and has no dependency on trajectory detection
+or Fact-model internals.
+
+`OnlineTrajectoryMonitor` now produces a `TrajectoryUpdate` immediately after
+each captured semantic boundary. An optional synchronous update sink can stage
+`update.to_context_frame(...)` in `TrajectoryContextBuffer`; the buffer keys
+frames by exact `(run_id, turn)`. This composition connects online assessment
+to the existing pipeline without making Conversation an event store or
+exposing the current event before the next model decision.
 
 ## Fact validity
 
@@ -97,8 +105,9 @@ turn 2 is absent from turn 1 and visible exactly once on turn 2.
 
 - no default or public Context pipeline;
 - no universal Fact collector or durable Fact store;
-- no automatic event producer inside Runtime;
-- no Completion Audit implementation yet;
+- no default-on capture or enforcement inside `RuntimeKernel`;
+- no domain-independent Completion verifier; the host evaluator supplies its
+  authoritative Requirement and Constraint verdicts;
 - no Action denial, cancellation, or termination policy;
 - no projection of detector thresholds, fingerprints, stale values, or the full
   trajectory log.
@@ -106,3 +115,8 @@ turn 2 is absent from turn 1 and visible exactly once on turn 2.
 The host still owns Fact capture and event production. Phase 2 establishes the
 model-facing seam and its invariants without claiming those domain-specific
 responsibilities for Core.
+
+The internal capture/event/context seam has passed the
+[Runtime-readiness gates](trajectory-runtime-readiness.md) and is now wired into
+`RuntimeKernel` when a host explicitly supplies a monitor. This does not enable
+enforcement by itself.

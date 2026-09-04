@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
+from time import monotonic
 
 from ejagent.context import IdentityContextPipeline
 from ejagent.contracts.context import (
@@ -25,6 +28,7 @@ from ejagent.contracts.json import (
     JsonObject,
     JsonValue,
     freeze_json_object,
+    thaw_json_value,
 )
 from ejagent.contracts.messages import (
     AssistantMessage,
@@ -62,8 +66,16 @@ from ejagent.contracts.tools import (
 )
 from ejagent.contracts.usage import RunUsage
 from ejagent.kernel._workspace import _RunWorkspace
+from ejagent.kernel.trajectory import (
+    CausalAction,
+    CheckpointSignal,
+    CheckpointTrigger,
+    TrajectoryCost,
+    TrajectoryMonitor,
+)
 
 Clock = Callable[[], datetime]
+MonotonicClock = Callable[[], float]
 
 
 def _utc_now() -> datetime:
@@ -158,12 +170,16 @@ class RuntimeKernel:
         model: ModelPort,
         tools: ToolExecutor,
         context: ContextPipeline | None = None,
+        trajectory: TrajectoryMonitor | None = None,
         clock: Clock | None = None,
+        monotonic_clock: MonotonicClock | None = None,
     ) -> None:
         self._model = model
         self._tools = tools
         self._context = context if context is not None else IdentityContextPipeline()
+        self._trajectory = trajectory
         self._clock = clock or _utc_now
+        self._monotonic_clock = monotonic_clock or monotonic
 
     async def run(
         self,
@@ -190,8 +206,28 @@ class RuntimeKernel:
                 "configuration_revision": spec.configuration_revision,
             },
         )
+        trajectory = self._trajectory
+        started_at = self._monotonic_clock() if trajectory is not None else 0.0
+        actor_action_count = 0
+        trajectory_active = trajectory is not None
 
         try:
+            if trajectory is not None:
+                trajectory_active = await self._capture_trajectory(
+                    trajectory,
+                    CheckpointSignal(
+                        run_id=spec.run_id,
+                        trigger=CheckpointTrigger.BASELINE,
+                        turn=0,
+                        cumulative_cost=self._trajectory_cost(
+                            usage,
+                            actor_action_count=actor_action_count,
+                            started_at=started_at,
+                        ),
+                    ),
+                    cancellation=token,
+                    audit=audit,
+                )
             for _ in range(spec.limits.max_turns):
                 token.raise_if_cancelled()
                 budget_failure = self._budget_failure(spec, usage)
@@ -257,6 +293,22 @@ class RuntimeKernel:
 
                 if not message.tool_calls:
                     assert message.content is not None
+                    if trajectory_active and trajectory is not None:
+                        trajectory_active = await self._capture_trajectory(
+                            trajectory,
+                            CheckpointSignal(
+                                run_id=spec.run_id,
+                                trigger=CheckpointTrigger.COMPLETION_PROPOSED,
+                                turn=turn,
+                                cumulative_cost=self._trajectory_cost(
+                                    usage,
+                                    actor_action_count=actor_action_count,
+                                    started_at=started_at,
+                                ),
+                            ),
+                            cancellation=token,
+                            audit=audit,
+                        )
                     audit.append("turn_completed", {"turn": turn})
                     return self._terminal(
                         workspace,
@@ -284,6 +336,7 @@ class RuntimeKernel:
                                 ),
                             ),
                         )
+                actor_action_count += len(message.tool_calls)
                 executions = await self._execute_tools(
                     message.tool_calls,
                     tool_names=tool_names,
@@ -303,6 +356,26 @@ class RuntimeKernel:
                         and execution.control is not ToolControl.CONTINUE
                     ):
                         terminal = execution
+                if trajectory_active and trajectory is not None:
+                    trajectory_active = await self._capture_trajectory(
+                        trajectory,
+                        CheckpointSignal(
+                            run_id=spec.run_id,
+                            trigger=CheckpointTrigger.TOOL_BATCH_COMPLETED,
+                            turn=turn,
+                            cumulative_cost=self._trajectory_cost(
+                                usage,
+                                actor_action_count=actor_action_count,
+                                started_at=started_at,
+                            ),
+                            causal_actions=tuple(
+                                self._causal_action(call) for call in message.tool_calls
+                            ),
+                            causal_batch_id=f"turn-{turn}:tool-batch",
+                        ),
+                        cancellation=token,
+                        audit=audit,
+                    )
                 if terminal is not None:
                     audit.append("turn_completed", {"turn": turn})
                     return self._tool_terminal(
@@ -378,6 +451,90 @@ class RuntimeKernel:
                     cause=exc,
                 ),
             )
+        finally:
+            if trajectory is not None:
+                try:
+                    trajectory.close_run(spec.run_id)
+                except Exception:
+                    # Trajectory observation is fail-open in the first Runtime phase.
+                    pass
+
+    async def _capture_trajectory(
+        self,
+        trajectory: TrajectoryMonitor,
+        signal: CheckpointSignal,
+        *,
+        cancellation: CancellationToken,
+        audit: _AuditTrail,
+    ) -> bool:
+        try:
+            receipt = await trajectory.capture(signal, cancellation=cancellation)
+            checkpoint_id = receipt.checkpoint_id
+            verdict = receipt.verdict
+            completion_allowed = receipt.completion_allowed
+            if not isinstance(checkpoint_id, str) or not checkpoint_id.strip():
+                raise TypeError("trajectory checkpoint_id must be non-empty text")
+            if not isinstance(verdict, str) or not verdict.strip():
+                raise TypeError("trajectory verdict must be non-empty text")
+            if completion_allowed is not None and not isinstance(
+                completion_allowed, bool
+            ):
+                raise TypeError("trajectory completion_allowed must be bool or None")
+        except RunCancelledError:
+            raise
+        except Exception as exc:
+            audit.append(
+                "trajectory_capture_failed",
+                {
+                    "trigger": signal.trigger.value,
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                },
+            )
+            return False
+        audit.append(
+            "trajectory_checkpointed",
+            {
+                "trigger": signal.trigger.value,
+                "checkpoint_id": checkpoint_id,
+                "verdict": verdict,
+                "completion_allowed": completion_allowed,
+            },
+        )
+        return True
+
+    def _trajectory_cost(
+        self,
+        usage: _UsageAccumulator,
+        *,
+        actor_action_count: int,
+        started_at: float,
+    ) -> TrajectoryCost:
+        elapsed_ms = max(
+            0,
+            int((self._monotonic_clock() - started_at) * 1_000),
+        )
+        snapshot = usage.snapshot()
+        return TrajectoryCost(
+            actor_actions=actor_action_count,
+            model_requests=snapshot.request_count,
+            total_tokens=snapshot.total_tokens,
+            elapsed_ms=elapsed_ms,
+        )
+
+    @staticmethod
+    def _causal_action(call: ToolCall) -> CausalAction:
+        arguments = json.dumps(
+            thaw_json_value(call.arguments),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        digest = hashlib.sha256(arguments).hexdigest()
+        return CausalAction(
+            action_id=call.id,
+            signature=f"{call.name}:{digest}",
+        )
 
     async def _build_context(
         self,
