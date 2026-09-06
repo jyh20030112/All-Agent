@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 import threading
-from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, Mapping, Sequence
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -12,16 +12,7 @@ from pathlib import Path
 from time import monotonic
 from typing import TypeVar
 
-from ejagent._trajectory import (
-    CheckpointEvaluation,
-    CheckpointEvaluationRequest,
-    EnvironmentFact,
-    OnlineTrajectoryMonitor,
-    TrajectoryCheckpoint,
-    TrajectoryContextBuffer,
-    TrajectoryContextPipeline,
-    TrajectoryUpdate,
-)
+from ejagent._trajectory import TrajectoryContextPipeline, TrajectoryUpdate
 from ejagent.contracts import (
     AssistantMessage,
     CancellationToken,
@@ -49,8 +40,25 @@ from ejagent.contracts import (
     UserMessage,
     thaw_json_value,
 )
+from ejagent.evaluation import (
+    CheckResult,
+    CompletionMode,
+    CompletionPolicy,
+    EvaluationCriterion,
+    EvaluationMonitor,
+    EvaluationPlan,
+    EvaluationReport,
+    EvaluationStatus,
+    GoalEvaluator,
+    JsonlEvaluationJournal,
+    JudgeLimits,
+    ModelJudge,
+    ProbeEvidenceSource,
+    VerificationRequest,
+    boolean_field,
+)
 from ejagent.harness import AgentHarness, HarnessStatus
-from ejagent.kernel import CheckpointTrigger
+from ejagent.kernel import CheckpointSignal
 from ejagent.storage import JsonlSessionStore
 from ejagent.tools import FunctionTool, FunctionToolExecutor
 
@@ -67,6 +75,12 @@ TRAJECTORY_DEMO_TASK = (
     "cycle, change the plan: call both tools together, then report the result."
 )
 
+COMPLETION_DEMO_TASK = (
+    "Demonstrate completion recovery. First propose completion before running "
+    "the probes. After completion-audit feedback, run both probes together and "
+    "return a supported summary."
+)
+
 
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
@@ -79,6 +93,12 @@ class RuntimeConfig:
     max_repeated_tool_calls: int = 3
     probe_delay_seconds: float = 1.5
     trajectory_enabled: bool = True
+    semantic_review: bool = False
+    completion_enforced: bool = False
+    completion_max_retries: int = 2
+    judge_max_requests: int = 8
+    judge_max_tokens: int = 16_384
+    judge_timeout_seconds: float = 30.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.agent_id, str) or not self.agent_id.strip():
@@ -89,6 +109,22 @@ class RuntimeConfig:
             raise ValueError("probe_delay_seconds must be greater than zero")
         if not isinstance(self.trajectory_enabled, bool):
             raise TypeError("trajectory_enabled must be a boolean")
+        if not isinstance(self.semantic_review, bool) or not isinstance(
+            self.completion_enforced, bool
+        ):
+            raise TypeError("evaluation options must be boolean")
+        if not self.trajectory_enabled and (
+            self.semantic_review or self.completion_enforced
+        ):
+            raise ValueError(
+                "semantic review and enforcement require trajectory feedback"
+            )
+        CompletionPolicy(max_retries=self.completion_max_retries)
+        JudgeLimits(
+            max_requests=self.judge_max_requests,
+            max_tokens=self.judge_max_tokens,
+            timeout_seconds=self.judge_timeout_seconds,
+        )
         RunLimits(
             max_turns=self.max_turns,
             max_tokens=self.max_tokens,
@@ -133,6 +169,7 @@ class RuntimeSnapshot:
     last_error: str | None
     trajectory_updates: tuple[TrajectoryUpdate, ...] = ()
     trajectory_contexts: tuple[TrajectoryContextDelivery, ...] = ()
+    evaluation_reports: tuple[EvaluationReport, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,10 +181,16 @@ class TrajectoryContextDelivery:
     instruction: TransientInstruction
 
 
-class _InspectableTrajectoryPipeline(TrajectoryContextPipeline):
-    def __init__(self, buffer: TrajectoryContextBuffer) -> None:
-        super().__init__(source=buffer)
+class _InspectableTrajectoryPipeline:
+    def __init__(self, pipeline: TrajectoryContextPipeline) -> None:
+        self._pipeline = pipeline
         self.deliveries: list[TrajectoryContextDelivery] = []
+
+    async def start(self) -> None:
+        await self._pipeline.start()
+
+    async def shutdown(self) -> None:
+        await self._pipeline.shutdown()
 
     async def build(
         self,
@@ -155,10 +198,11 @@ class _InspectableTrajectoryPipeline(TrajectoryContextPipeline):
         *,
         cancellation: CancellationToken,
     ) -> ContextView:
-        view = await super().build(request, cancellation=cancellation)
+        view = await self._pipeline.build(request, cancellation=cancellation)
         for message in view.messages:
-            if isinstance(message, TransientInstruction) and message.source.startswith(
-                "trajectory:"
+            if isinstance(message, TransientInstruction) and (
+                message.source.startswith("trajectory:")
+                or message.source == "completion_audit"
             ):
                 self.deliveries.append(
                     TrajectoryContextDelivery(request.run_id, request.turn, message)
@@ -176,6 +220,8 @@ class _ActiveProbe:
 
 @dataclass(slots=True)
 class _ProbeRecorder:
+    evidence: ProbeEvidenceSource | None = None
+    run_id: str | None = None
     active: dict[str, _ActiveProbe] = field(default_factory=dict)
     completed: list[ProbeExecution] = field(default_factory=list)
 
@@ -198,6 +244,14 @@ class _ProbeRecorder:
             elapsed_seconds=monotonic() - active.started_monotonic,
             cancelled=cancelled,
         )
+        if self.evidence is not None and self.run_id is not None:
+            self.evidence.record(
+                self.run_id,
+                call.name,
+                started_at=active.started_monotonic,
+                finished_at=active.started_monotonic + (execution.elapsed_seconds or 0),
+                cancelled=cancelled,
+            )
         self.completed.append(execution)
         return execution
 
@@ -213,80 +267,101 @@ class _ProbeRecorder:
         return (*self.completed, *running)
 
 
-class _ProbeCheckpointEvaluator:
-    """Evaluate only this Run's recorded probe executions, never model claims."""
-
+class _RecordedProbeSource(ProbeEvidenceSource):
     def __init__(self, recorder: _ProbeRecorder) -> None:
+        super().__init__(("parallel_probe_a", "parallel_probe_b"))
         self._recorder = recorder
-        self._offsets: dict[str, int] = {}
+        recorder.evidence = self
 
-    async def evaluate(
-        self,
-        request: CheckpointEvaluationRequest,
-        *,
-        cancellation: CancellationToken,
-    ) -> CheckpointEvaluation:
-        cancellation.raise_if_cancelled()
-        run_id = request.signal.run_id
-        if request.signal.trigger is CheckpointTrigger.BASELINE:
-            self._offsets[run_id] = len(self._recorder.completed)
-        executions = tuple(
-            probe
-            for probe in self._recorder.completed[self._offsets[run_id] :]
-            if not probe.cancelled and probe.finished_at is not None
-        )
-        first = tuple(p for p in executions if p.tool_name == "parallel_probe_a")
-        second = tuple(p for p in executions if p.tool_name == "parallel_probe_b")
-        overlapped = any(
-            a.finished_at is not None
-            and b.finished_at is not None
-            and max(a.started_at, b.started_at) < min(a.finished_at, b.finished_at)
-            for a in first
-            for b in second
-        )
-        requirements: dict[str, bool | None] = {
-            "probe_a_completed": bool(first),
-            "probe_b_completed": bool(second),
-            "probes_overlapped": overlapped,
-        }
-        facts: JsonObject = dict(requirements)
-        fingerprint = hashlib.sha256(
-            json.dumps(facts, sort_keys=True).encode("utf-8")
-        ).hexdigest()
-        evidence_ref = f"probe-recorder:{run_id}:{fingerprint}"
-        previous = request.previous_checkpoint
-        gained = tuple(
-            name
-            for name, satisfied in requirements.items()
-            if satisfied is True
-            and (previous is None or previous.requirements.get(name) is not True)
-        )
-        fact = EnvironmentFact(
-            fact_id=f"probe-state:{fingerprint}",
-            subject="validation_probes",
-            predicate="verified_run_results",
-            value=facts,
-            scope=(run_id,),
-            source="Streamlit probe execution recorder",
-            observed_at=datetime.now(UTC),
-            checkpoint_id=request.checkpoint_id,
-            evidence_ref=evidence_ref,
-            freshness="Recomputed from completed executions at this checkpoint.",
-            authority="Host-recorded completion timestamps; cancelled probes excluded.",
-        )
-        return CheckpointEvaluation(
-            projection_version="streamlit-probes-v1",
-            state_fingerprint=fingerprint,
-            environment_facts=facts,
-            requirements=requirements,
-            constraints={},
-            new_evidence=tuple(f"{evidence_ref}:{name}" for name in gained),
-            facts=(fact,),
-            fact_capture_complete=True,
-        )
+    async def revision(
+        self, signal: CheckpointSignal, *, cancellation: CancellationToken
+    ) -> str:
+        self._recorder.run_id = signal.run_id
+        return await super().revision(signal, cancellation=cancellation)
 
     def close_run(self, run_id: str) -> None:
-        self._offsets.pop(run_id, None)
+        super().close_run(run_id)
+        if self._recorder.run_id == run_id:
+            self._recorder.run_id = None
+
+
+def _evaluation_plan(semantic: bool) -> EvaluationPlan:
+    requirements: tuple[EvaluationCriterion, ...] = (
+        EvaluationCriterion(
+            "probe_a_completed", "Probe A completes", "probe_a", ("probes",)
+        ),
+        EvaluationCriterion(
+            "probe_b_completed", "Probe B completes", "probe_b", ("probes",)
+        ),
+        EvaluationCriterion(
+            "probes_overlapped", "Completed probes overlap", "overlap", ("probes",)
+        ),
+    )
+    if semantic:
+        requirements += (
+            EvaluationCriterion(
+                "probe_summary",
+                "The proposed final answer accurately summarizes the completed parallel probes and does not claim unsupported results",
+                "summary_quality",
+                ("probes", "$completion"),
+                semantic=True,
+                guard_method="summary_guard",
+                completion_only=True,
+            ),
+        )
+    return EvaluationPlan(
+        PROBE_GOAL,
+        "streamlit-probes.v3-semantic" if semantic else "streamlit-probes.v3",
+        requirements,
+    )
+
+
+async def _summary_guard(
+    request: VerificationRequest, cancellation: CancellationToken
+) -> CheckResult:
+    cancellation.raise_if_cancelled()
+    value = request.evidence["probes"].value
+    passed = isinstance(value, Mapping) and all(
+        value.get(key) is True
+        for key in ("parallel_probe_a", "parallel_probe_b", "overlapped")
+    )
+    return CheckResult(
+        EvaluationStatus.PASS if passed else EvaluationStatus.FAIL,
+        "Host probe evidence confirms completion and overlap"
+        if passed
+        else "Host probe evidence does not confirm completion and overlap",
+        ("probes",),
+    )
+
+
+class DemoJudgeModel(ModelPort):
+    """Credential-free stand-in exercising the same structured judge protocol."""
+
+    async def stream(
+        self, request: ModelRequest, *, cancellation: CancellationToken
+    ) -> AsyncIterator[ModelStreamEvent]:
+        cancellation.raise_if_cancelled()
+        message = request.messages[-1]
+        if not isinstance(message, UserMessage):
+            raise ValueError("demo judge requires the structured evaluation request")
+        data = json.loads(message.content)
+        evidence = data["evidence"]
+        candidate = next(
+            (item["value"] for item in evidence if isinstance(item["value"], str)), ""
+        )
+        passed = "parallel_probe_a" in candidate and "parallel_probe_b" in candidate
+        content = json.dumps(
+            {
+                "criterion_id": data["criterion_id"],
+                "status": "pass" if passed else "fail",
+                "rationale": "Demo summary check: both completed probes are named"
+                if passed
+                else "Demo summary must name both completed probes",
+                "evidence_refs": [item["reference"] for item in evidence],
+                "missing_evidence": [],
+            }
+        )
+        yield ModelResponseCompleted(AssistantMessage(content), ModelUsage(40, 20, 60))
 
 
 class DemoValidationModel(ModelPort):
@@ -317,6 +392,17 @@ class DemoValidationModel(ModelPort):
             ),
             "",
         )
+        completion_demo = task.startswith("Demonstrate completion recovery.")
+        was_rejected = any(
+            isinstance(message, TransientInstruction)
+            and message.source == "completion_audit"
+            for message in current_messages
+        )
+        if completion_demo and not results and not was_rejected:
+            yield ModelResponseCompleted(
+                AssistantMessage("Parallel validation is complete."), usage
+            )
+            return
         cycle_demo = task.startswith("Demonstrate trajectory recovery.")
         parallel_requested = any(
             isinstance(message, AssistantMessage) and len(message.tool_calls) == 2
@@ -346,7 +432,7 @@ class DemoValidationModel(ModelPort):
             message.content
             for message in current_messages
             if isinstance(message, TransientInstruction)
-            and not message.source.startswith("trajectory:")
+            and message.source == "steering"
         )
         labels = ", ".join(message.tool_name for message in results)
         text = f"Parallel validation completed with {labels}."
@@ -427,12 +513,22 @@ class StreamlitRuntimeController:
         config: RuntimeConfig,
         *,
         model_factory: ModelFactory = DemoValidationModel,
+        judge_factory: ModelFactory | None = None,
         command_timeout: float = 5.0,
     ) -> None:
         if command_timeout <= 0:
             raise ValueError("command_timeout must be greater than zero")
         self.config = config
         self._model_factory = model_factory
+        if (
+            config.semantic_review
+            and judge_factory is None
+            and model_factory is not DemoValidationModel
+        ):
+            raise ValueError(
+                "semantic review requires an explicit judge_factory with a custom Actor"
+            )
+        self._judge_factory = judge_factory or DemoJudgeModel
         self._command_timeout = command_timeout
         self._ready = threading.Event()
         self._closed = threading.Event()
@@ -447,6 +543,7 @@ class StreamlitRuntimeController:
         self._last_error: str | None = None
         self._startup_error: BaseException | None = None
         self._trajectory_updates: list[TrajectoryUpdate] = []
+        self._evaluation_reports: list[EvaluationReport] = []
         self._trajectory_pipeline: _InspectableTrajectoryPipeline | None = None
         self._thread = threading.Thread(
             target=self._thread_main,
@@ -540,37 +637,65 @@ class StreamlitRuntimeController:
         store = JsonlSessionStore(self.config.store_root)
         monitor = None
         if self.config.trajectory_enabled:
-            buffer = TrajectoryContextBuffer()
-            evaluator = _ProbeCheckpointEvaluator(recorder)
-            pipeline = _InspectableTrajectoryPipeline(buffer)
-            self._trajectory_pipeline = pipeline
+            source = _RecordedProbeSource(recorder)
+            journal = JsonlEvaluationJournal(
+                self.config.store_root
+                / "evaluations"
+                / (hashlib.sha256(self.config.agent_id.encode()).hexdigest() + ".jsonl")
+            )
 
-            def publish(update: TrajectoryUpdate) -> None:
-                if update.signal.trigger is CheckpointTrigger.BASELINE:
+            def report_sink(report: EvaluationReport) -> None:
+                if (
+                    not self._evaluation_reports
+                    or self._evaluation_reports[-1].run_id != report.run_id
+                ):
+                    self._evaluation_reports.clear()
                     self._trajectory_updates.clear()
-                    pipeline.deliveries.clear()
-                self._trajectory_updates.append(update)
-                buffer.publish(
-                    update.to_context_frame(
-                        goal=PROBE_GOAL,
-                        next_turn=update.signal.turn + 1,
-                    )
+                    if self._trajectory_pipeline is not None:
+                        self._trajectory_pipeline.deliveries.clear()
+                self._evaluation_reports.append(report)
+                journal(report)
+
+            judge = (
+                ModelJudge(
+                    self._judge_factory(),
+                    limits=JudgeLimits(
+                        max_requests=self.config.judge_max_requests,
+                        max_tokens=self.config.judge_max_tokens,
+                        timeout_seconds=self.config.judge_timeout_seconds,
+                    ),
                 )
-
-            def close_run(
-                run_id: str, _checkpoints: tuple[TrajectoryCheckpoint, ...]
-            ) -> None:
-                buffer.close_run(run_id)
-                evaluator.close_run(run_id)
-
-            monitor = OnlineTrajectoryMonitor(
-                evaluator, update_sink=publish, run_close_sink=close_run
+                if self.config.semantic_review
+                else None
+            )
+            evaluator = GoalEvaluator(
+                sources={"probes": source},
+                verifiers={
+                    "probe_a": boolean_field("parallel_probe_a"),
+                    "probe_b": boolean_field("parallel_probe_b"),
+                    "overlap": boolean_field("overlapped"),
+                    "summary_guard": _summary_guard,
+                },
+                semantic_judge=judge,
+                report_sink=report_sink,
+            )
+            monitor = EvaluationMonitor(
+                evaluator, update_sink=self._trajectory_updates.append
+            )
+            self._trajectory_pipeline = _InspectableTrajectoryPipeline(
+                monitor.context_pipeline()
             )
         harness = AgentHarness(
             agent_id=self.config.agent_id,
             model=self._model_factory(),
             tools=_validation_tools(recorder, self.config.probe_delay_seconds),
             trajectory=monitor,
+            completion_policy=CompletionPolicy(
+                CompletionMode.ENFORCE
+                if self.config.completion_enforced
+                else CompletionMode.OBSERVE,
+                self.config.completion_max_retries,
+            ),
             context=self._trajectory_pipeline,
             initial_messages=(
                 SystemMessage(
@@ -598,7 +723,16 @@ class StreamlitRuntimeController:
         if self._run_task is not None and not self._run_task.done():
             raise RuntimeError("a Run submission is already pending")
         self._last_error = None
-        self._run_task = asyncio.create_task(self._capture_run(harness.run(task)))
+        self._run_task = asyncio.create_task(
+            self._capture_run(
+                harness.run(
+                    task,
+                    evaluation_plan=_evaluation_plan(self.config.semantic_review)
+                    if self.config.trajectory_enabled
+                    else None,
+                )
+            )
+        )
 
     async def _capture_run(self, run: Coroutine[object, object, RunOutcome]) -> None:
         try:
@@ -615,7 +749,12 @@ class StreamlitRuntimeController:
         return receipt
 
     async def _follow_up(self, task: str) -> ControlReceipt:
-        handle = self._require_harness().follow_up(task)
+        handle = self._require_harness().follow_up(
+            task,
+            evaluation_plan=_evaluation_plan(self.config.semantic_review)
+            if self.config.trajectory_enabled
+            else None,
+        )
         self._record_control(handle.receipt)
         if handle.accepted:
             watcher = asyncio.create_task(self._capture_follow_up(handle.wait()))
@@ -651,6 +790,7 @@ class StreamlitRuntimeController:
             probes=recorder.snapshot(),
             last_error=self._last_error,
             trajectory_updates=tuple(self._trajectory_updates),
+            evaluation_reports=tuple(self._evaluation_reports),
             trajectory_contexts=(
                 tuple(self._trajectory_pipeline.deliveries)
                 if self._trajectory_pipeline is not None

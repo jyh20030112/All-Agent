@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -19,8 +20,10 @@ from ejagent.contracts import (
     RunStatus,
     TransientInstruction,
 )
+from ejagent.evaluation import EvaluationStatus
 from ejagent.harness import HarnessStatus
 from examples.streamlit_runtime import (
+    COMPLETION_DEMO_TASK,
     TRAJECTORY_DEMO_TASK,
     DemoValidationModel,
     RuntimeConfig,
@@ -308,8 +311,130 @@ class StreamlitRuntimeControllerTests(unittest.TestCase):
             )
         )
 
+    def test_formal_evaluator_semantic_review_and_enforcement_share_real_feedback(
+        self,
+    ) -> None:
+        controller = StreamlitRuntimeController(
+            RuntimeConfig(
+                agent_id="formal-evaluation",
+                store_root=self.store_root,
+                probe_delay_seconds=0.01,
+                semantic_review=True,
+                completion_enforced=True,
+            )
+        )
+        self.controllers.append(controller)
+        controller.start_run(TRAJECTORY_DEMO_TASK)
+        snapshot = _wait_for(controller, lambda item: item.revision == 1, timeout=5)
+        self.assertEqual(snapshot.last_result.status, RunStatus.COMPLETED)
+        report = snapshot.evaluation_reports[-1]
+        self.assertEqual(len(report.requirements), 4)
+        self.assertTrue(
+            all(item.status is EvaluationStatus.PASS for item in report.requirements)
+        )
+        self.assertEqual(
+            sum(item.cost.model_requests for item in snapshot.evaluation_reports), 1
+        )
+        self.assertEqual(
+            sum(
+                item.cost.model_input_tokens + item.cost.model_output_tokens
+                for item in snapshot.evaluation_reports
+            ),
+            60,
+        )
+        self.assertTrue(
+            any(
+                item.instruction.source == "trajectory:cycle_confirmed"
+                for item in snapshot.trajectory_contexts
+            )
+        )
+        self.assertTrue(snapshot.trajectory_updates[-1].completion_allowed)
+        logs = list((self.store_root / "evaluations").glob("*.jsonl"))
+        self.assertEqual(len(logs), 1)
+        stored = [json.loads(line) for line in logs[0].read_text().splitlines()]
+        self.assertEqual(stored[-1]["report_ref"], report.report_ref)
+        self.assertEqual(stored[-1]["requirements"][-1]["status"], "pass")
+
+    def test_completion_recovery_demo_rejects_then_finishes_same_run(self) -> None:
+        controller = StreamlitRuntimeController(
+            RuntimeConfig(
+                agent_id="completion-demo",
+                store_root=self.store_root,
+                probe_delay_seconds=0.01,
+                semantic_review=True,
+                completion_enforced=True,
+            )
+        )
+        self.controllers.append(controller)
+        controller.start_run(COMPLETION_DEMO_TASK)
+        snapshot = _wait_for(controller, lambda item: item.revision == 1, timeout=5)
+        self.assertEqual(snapshot.last_result.turns, 3)
+        rejected = [
+            record
+            for record in snapshot.audits[-1].records
+            if record.kind == "completion_rejected"
+        ]
+        self.assertEqual(len(rejected), 1)
+        self.assertNotIn(
+            AssistantMessage("Parallel validation is complete."), snapshot.messages
+        )
+        self.assertTrue(
+            any(
+                item.instruction.source == "completion_audit"
+                for item in snapshot.trajectory_contexts
+            )
+        )
+        self.assertEqual(
+            sum(report.cost.model_requests for report in snapshot.evaluation_reports), 1
+        )
+
 
 class StreamlitAppSmokeTests(unittest.TestCase):
+    def test_app_semantic_controls_display_formal_reports_and_separate_costs(
+        self,
+    ) -> None:
+        app_path = Path(__file__).parents[1] / "examples" / "streamlit_app.py"
+        with tempfile.TemporaryDirectory() as root:
+            app = AppTest.from_file(app_path, default_timeout=5).run()
+            app.text_input[1].set_value(root).run()
+            app.slider[0].set_value(0.25).run()
+            next(
+                item
+                for item in app.checkbox
+                if item.label == "Semantic completion review"
+            ).check().run()
+            next(
+                item
+                for item in app.checkbox
+                if item.label == "Require completion approval"
+            ).check().run()
+            next(item for item in app.button if item.label == "Start").click().run()
+            controller = app.session_state["ejagent_runtime_controller"]
+            try:
+                next(
+                    item
+                    for item in app.button
+                    if item.label == "Run parallel validation"
+                ).click().run()
+                _wait_for(controller, lambda item: item.revision == 1, timeout=5)
+                app.run()
+                self.assertFalse(app.exception)
+                metrics = {item.label: item.value for item in app.metric}
+                self.assertEqual(metrics["Judge model requests"], "1")
+                self.assertEqual(metrics["Judge reported tokens"], "60")
+                self.assertEqual(metrics["Actor model requests"], "2")
+                self.assertTrue(
+                    any(item.value == "Evaluation details" for item in app.subheader)
+                )
+                self.assertTrue(
+                    any(
+                        item.label == "Evidence and diagnostics"
+                        for item in app.expander
+                    )
+                )
+            finally:
+                controller.close()
+
     def test_app_entrypoint_imports_from_outside_repository(self) -> None:
         app_path = Path(__file__).parents[1] / "examples" / "streamlit_app.py"
         with tempfile.TemporaryDirectory() as working_directory:
@@ -329,7 +454,7 @@ class StreamlitAppSmokeTests(unittest.TestCase):
         app = AppTest.from_file(app_path).run()
 
         self.assertFalse(app.exception)
-        self.assertEqual(app.title[0].value, "EJAgent Runtime Validation")
+        self.assertEqual(app.title[0].value, "EJAgent Harness Validation")
         self.assertTrue(any("Start the runtime" in item.value for item in app.info))
 
     def test_app_starts_and_stops_demo_runtime(self) -> None:

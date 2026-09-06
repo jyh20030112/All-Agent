@@ -7,7 +7,9 @@ from pathlib import Path
 
 import streamlit as st
 from streamlit_runtime import (
+    COMPLETION_DEMO_TASK,
     TRAJECTORY_DEMO_TASK,
+    DemoJudgeModel,
     DemoValidationModel,
     ProbeExecution,
     RuntimeConfig,
@@ -55,6 +57,9 @@ def _start_controller(config: RuntimeConfig, mode: str) -> None:
     st.session_state[_CONTROLLER_KEY] = StreamlitRuntimeController(
         config,
         model_factory=model_factory,
+        judge_factory=(DemoJudgeModel if mode == _DEMO_MODE else model_factory)
+        if config.semantic_review
+        else None,
     )
     st.session_state[_NOTICE_KEY] = (
         f"Runtime started for {config.agent_id!r}; revision restored from JSONL."
@@ -119,6 +124,38 @@ def _render_sidebar() -> None:
             "Other chat goals are outside this evaluation."
         )
 
+        semantic_review = st.checkbox(
+            "Semantic completion review",
+            value=False,
+            disabled=active or not trajectory_enabled,
+        )
+        completion_enforced = st.checkbox(
+            "Require completion approval",
+            value=False,
+            disabled=active or not trajectory_enabled,
+        )
+        completion_max_retries = st.number_input(
+            "Completion retries",
+            min_value=0,
+            value=2,
+            disabled=active or not completion_enforced or not trajectory_enabled,
+        )
+        judge_max_requests = st.number_input(
+            "Judge request budget per Run",
+            min_value=1,
+            value=8,
+            disabled=active or not semantic_review or not trajectory_enabled,
+        )
+        judge_max_tokens = st.number_input(
+            "Judge token budget per Run",
+            min_value=1,
+            value=16_384,
+            disabled=active or not semantic_review or not trajectory_enabled,
+        )
+        st.caption(
+            "Semantic review uses a separate judge request and budget. Demo mode uses a deterministic stand-in. Rejected completions retry within this Run when approval is required."
+        )
+
         if mode == _PROVIDER_MODE:
             configured_model = os.getenv("CHAT_MODEL") or "not configured"
             st.caption(f"CHAT_MODEL: `{configured_model}`")
@@ -135,6 +172,13 @@ def _render_sidebar() -> None:
                         max_tokens=int(max_tokens) if token_budget_enabled else None,
                         probe_delay_seconds=float(probe_delay),
                         trajectory_enabled=trajectory_enabled,
+                        semantic_review=bool(semantic_review and trajectory_enabled),
+                        completion_enforced=bool(
+                            completion_enforced and trajectory_enabled
+                        ),
+                        completion_max_retries=int(completion_max_retries),
+                        judge_max_requests=int(judge_max_requests),
+                        judge_max_tokens=int(judge_max_tokens),
                     ),
                     mode,
                 )
@@ -236,6 +280,17 @@ def _render_controls(
         "Recovery demo: repeat sequential probes, then use confirmed-cycle feedback "
         "to switch to a parallel batch. Demo mode takes 8 turns; allow at least 160 "
         "demo tokens. Provider behavior and token usage can vary."
+    )
+
+    if st.button(
+        "Run completion recovery",
+        disabled=snapshot.status is HarnessStatus.RUNNING
+        or not controller.config.completion_enforced,
+    ):
+        controller.start_run(COMPLETION_DEMO_TASK)
+        st.rerun()
+    st.caption(
+        "Completion recovery first proposes an unsupported claim, then uses audit feedback to run both probes. Requires completion approval; demo mode takes 3 turns."
     )
 
     if st.button(
@@ -406,8 +461,16 @@ def _render_trajectory(
         return
     st.caption(
         "Coverage measures three probe requirements: A completes, B completes, "
-        "and a completed pair overlaps. Completion advice does not block the Run. "
+        "and a completed pair overlaps, plus optional final-answer review. "
         "Details below cover the latest Run in this runtime; Audit retains receipts."
+    )
+    st.caption(
+        "Completion policy: "
+        + (
+            "approval required; bounded retries in the same Run"
+            if controller.config.completion_enforced
+            else "observe only"
+        )
     )
     updates = snapshot.trajectory_updates
     if not updates:
@@ -416,6 +479,13 @@ def _render_trajectory(
         )
         return
     latest = updates[-1]
+    if (
+        snapshot.evaluation_reports
+        and snapshot.evaluation_reports[-1].checkpoint_id != latest.checkpoint_id
+    ):
+        st.info(
+            "The latest evaluation was interrupted. Coverage below belongs to the previous accepted checkpoint; evaluation details retain the interrupted work and costs."
+        )
     progress = latest.assessment.progress[-1]
     st.caption(f"Run: {latest.signal.run_id}")
     columns = st.columns(3)
@@ -444,11 +514,85 @@ def _render_trajectory(
     )
     st.write("Current verified requirements")
     st.json(dict(latest.checkpoint.requirements))
+    reports = snapshot.evaluation_reports
+    if reports:
+        report = reports[-1]
+        st.subheader("Evaluation details")
+        st.dataframe(
+            [
+                {
+                    "Criterion": item.criterion_id,
+                    "Method": item.method,
+                    "Status": item.status.value,
+                    "Reason": item.rationale,
+                    "Evidence references": list(item.evidence_refs),
+                    "Evidence versions": dict(item.evidence_versions),
+                    "Missing evidence": list(item.missing_evidence),
+                }
+                for item in (*report.requirements, *report.constraints)
+            ],
+            hide_index=True,
+            width="stretch",
+        )
+        columns = st.columns(4)
+        columns[0].metric(
+            "Actor model requests", latest.signal.cumulative_cost.model_requests
+        )
+        columns[1].metric(
+            "Judge model requests", sum(item.cost.model_requests for item in reports)
+        )
+        columns[2].metric(
+            "Judge reported tokens",
+            sum(
+                item.cost.model_input_tokens + item.cost.model_output_tokens
+                for item in reports
+            ),
+        )
+        columns[3].metric(
+            "Judge unreported requests",
+            sum(item.cost.model_unreported_requests for item in reports),
+        )
+        st.dataframe(
+            [
+                {
+                    "Checkpoint": item.checkpoint_id,
+                    "Source reads": item.cost.source_reads,
+                    "Revision checks": item.cost.revision_checks,
+                    "Verifier calls": item.cost.verifier_calls,
+                    "Cache hits": item.cost.cache_hits,
+                    "Judge requests": item.cost.model_requests,
+                    "Evaluation ms": item.cost.elapsed_ms,
+                }
+                for item in reports
+            ],
+            hide_index=True,
+            width="stretch",
+        )
+        with st.expander("Evidence and diagnostics"):
+            st.json(
+                {
+                    "report_ref": report.report_ref,
+                    "evidence": {
+                        key: {
+                            "reference": report.evidence_ref(key),
+                            "source": evidence.location,
+                            "revision": evidence.revision,
+                            "value": thaw_json_value(evidence.value),
+                        }
+                        for key, evidence in report.evidence.items()
+                    },
+                    "diagnostics": dict(report.diagnostics),
+                    "invalidated_refs": report.invalidated_refs,
+                }
+            )
+        st.caption(
+            "Full evaluation reports and observed evidence are retained under the session folder's evaluations directory. Report references also appear in Audit."
+        )
     st.subheader("Trajectory instructions in model context")
     st.caption(
         "These are the actual instructions included in built model contexts. "
-        "Suspected cycles are withheld. Terminal checkpoint advice has no next "
-        "model call and therefore does not appear here."
+        "Suspected cycles are withheld. When completion approval is required, "
+        "failed audits feed the next model call in the same Run."
     )
     for delivery in snapshot.trajectory_contexts:
         with st.expander(f"Turn {delivery.turn} · {delivery.instruction.source}"):
@@ -527,7 +671,7 @@ def _runtime_fragment() -> None:
 
 
 st.set_page_config(page_title="EJAgent Validation", page_icon="🥚", layout="wide")
-st.title("EJAgent Runtime Validation")
+st.title("EJAgent Harness Validation")
 st.caption(
     "Exercise durable Conversation state, concurrent tools, live controls, "
     "trajectory feedback, Run limits, revisions, and audit records from one page."
