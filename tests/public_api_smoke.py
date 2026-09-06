@@ -22,6 +22,11 @@ def main() -> None:
         raise AssertionError("the former import package must not be installed")
 
     import ejagent
+    import ejagent.evaluation
+
+    for name in ejagent.evaluation.__all__:
+        if not hasattr(ejagent.evaluation, name):
+            raise AssertionError(f"evaluation export does not resolve: {name}")
 
     missing_attributes = [
         name for name in ejagent.__all__ if not hasattr(ejagent, name)

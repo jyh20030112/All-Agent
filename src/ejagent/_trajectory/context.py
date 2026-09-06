@@ -35,6 +35,7 @@ class TrajectoryContextEventKind(StrEnum):
     CONSTRAINT_VIOLATED = "constraint_violated"
     EXTERNAL_STATE_CHANGED = "external_state_changed"
     COMPLETION_AUDIT_FAILED = "completion_audit_failed"
+    EVALUATION_UNAVAILABLE = "evaluation_unavailable"
 
 
 def _required_text(value: object, label: str) -> str:
@@ -94,6 +95,12 @@ class TrajectoryContextEvent:
         ):
             raise ValueError(
                 "CompletionAuditFailed requires unmet items or missing Evidence"
+            )
+        if self.kind is TrajectoryContextEventKind.EVALUATION_UNAVAILABLE and not (
+            self.affected_items or self.missing_evidence
+        ):
+            raise ValueError(
+                "EvaluationUnavailable requires unknown items or missing evidence"
             )
 
 
@@ -158,6 +165,8 @@ class TrajectoryContextProjector:
             raise TypeError("frame must be a TrajectoryContextFrame")
         if frame.event.kind is TrajectoryContextEventKind.CYCLE_SUSPECTED:
             return None
+        if frame.event.kind is TrajectoryContextEventKind.EVALUATION_UNAVAILABLE:
+            return self._project_unavailable(frame)
         self._validate_facts(frame.checkpoint)
         self._validate_event(frame)
         payload = {
@@ -201,6 +210,44 @@ class TrajectoryContextProjector:
             ),
             event=frame.event.kind,
             checkpoint_id=frame.checkpoint.checkpoint_id,
+        )
+
+    def _project_unavailable(
+        self, frame: TrajectoryContextFrame
+    ) -> ProjectedTrajectoryContext:
+        if frame.checkpoint.fact_capture_complete:
+            raise ValueError("unavailable feedback requires incomplete evaluation")
+        self._validate_event(frame)
+        verdicts = {**frame.checkpoint.requirements, **frame.checkpoint.constraints}
+        if any(
+            name not in verdicts or verdicts[name] is not None
+            for name in frame.event.affected_items
+        ):
+            raise ValueError("unavailable affected items must have unknown verdicts")
+        payload = {
+            "trajectory_context": {
+                "schema": self.SCHEMA,
+                "event": frame.event.kind.value,
+                "event_id": frame.event.event_id,
+                "goal_anchor": frame.goal,
+                "checkpoint": frame.checkpoint.checkpoint_id,
+                "affected_items": list(frame.event.affected_items),
+                "missing_evidence": list(frame.event.missing_evidence),
+                "invalidated_facts": [
+                    self._invalidated_fact_payload(item)
+                    for item in frame.checkpoint.invalidated_facts
+                    if item.fact_id in frame.event.invalidated_fact_ids
+                ],
+                "instruction": "Evaluation is incomplete or conflicting. Gather the missing evidence and recheck affected items. Discard invalidated conclusions; no current facts or completion score are asserted here.",
+            }
+        }
+        return ProjectedTrajectoryContext(
+            TransientInstruction(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                "trajectory:evaluation_unavailable",
+            ),
+            frame.event.kind,
+            frame.checkpoint.checkpoint_id,
         )
 
     @staticmethod
