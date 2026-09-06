@@ -53,11 +53,19 @@ feedback. The host evaluator supplies the actual environment facts and the
 Requirement/Constraint verdicts. Coverage and recurrence are calculated from
 those inputs; model claims do not automatically become verified facts.
 
-Trajectory assessments currently provide observation and Context feedback.
-`completion_allowed=False` is recorded but does not make the Kernel continue or
-reject a text completion. Automatic Action denial, forced replanning, and
-completion enforcement remain separate policy work. The intended same-Run
-completion feedback semantics are described in
+The public [evaluation module](evaluation.md) provides Run-bound acceptance
+criteria, deterministic file/probe checks, evidence invalidation, and limited
+feedback when evidence is unavailable, plus an optional `ModelJudge` for explicit
+semantic criteria. Hosts
+can register domain evidence sources and verification methods, and retain full
+reports in a separate JSONL journal.
+
+Trajectory assessments provide observation and Context feedback. The independent
+`CompletionPolicy` defaults to observation. Enabling enforcement retries rejected
+text or tool completions within the same Run, bounded by retry and Run limits;
+rejected final prose remains in Audit instead of committed Conversation.
+Automatic Action denial and forced replanning remain separate policy work.
+Completion feedback semantics and the policy choice are described in
 [ADR 0001](adr/0001-failed-completion-audit-continues-run.md).
 
 Each `AgentHarness` currently represents one logical agent. Multi-agent

@@ -118,6 +118,17 @@ harness = AgentHarness(
 )
 ```
 
+## 评估任务结果
+
+`ejagent.evaluation` 支持为每个 Run 绑定不可变的 `EvaluationPlan`，读取带版本的证据，
+并执行确定性验收检查。文件产物和探针证据共用 `GoalEvaluator`；`EvaluationMonitor`
+将结果接入轨迹分析和临时模型 Context。缺少证据时返回未知，证据变化后使旧结论失效。
+
+确定性检查不调用大模型；可选的 `ModelJudge` 处理显式语义项目，独立的
+`CompletionPolicy` 支持拦截未通过的完成请求并在当前 Run 内重试。默认保持观察模式。
+接入方法、自定义检查、评估日志
+及无需凭证的 `examples/evaluate_artifact.py` 示例见[评估模块指南](docs/evaluation.md)。
+
 ## 在 Streamlit 中体验 Harness
 
 仓库提供一个用于体验 Harness 行为的交互式应用。确定性 Demo 模式不需要凭据，
@@ -136,12 +147,17 @@ uv run streamlit run examples/streamlit_app.py
 的真实工具记录检查三个需求：A 完成、B 完成、已完成的 A/B 执行时间存在重叠。
 这个覆盖率只衡量探针验证，不评价任意聊天任务。**Trajectory** 页签展示检查点进度、
 循环判断、完成建议，以及实际加入模型上下文的临时指令。详细信息仅保留当前应用会话
-的最近一次 Run；重启后，持久化 Audit 中仍保留轨迹采集回执。
+的最近一次 Run；重启后可在独立评估日志中查到完整报告，Audit 保留关联回执。
 
 选择 Demo 模式，点击 **Controls → Run trajectory recovery**，可以复现反馈过程：
 模型先交替串行调用探针，分析器确认循环后，模型根据上下文反馈改为同时调用两个探针。
 请至少允许 8 轮和 160 个 Demo Token。原有并发验证仍可使用；真实 Provider 模式也接入
-同一套评估器和上下文管道。完成建议仍属于观察结果，审核失败不会强制 Kernel 继续执行。
+同一套正式评估器和上下文管道。启用 **Semantic completion review** 可单独审核最终总结，
+启用 **Require completion approval** 则会在当前 Run 内限次重试。演示模式使用确定性的
+Judge 替身；真实 Provider 模式会发起独立模型请求。界面展示逐项理由、证据版本、缺失项
+以及 Actor／Judge 成本，完整报告保存在会话目录的 `evaluations/` 下。开启完成拦截后，
+**Run completion recovery** 可演示同一 Run 内先拒绝未经验证的声明、再完成探针验证的
+流程，Demo 模式共需 3 轮。
 
 ## 每个边界都可以定制
 
@@ -156,8 +172,8 @@ uv run streamlit run examples/streamlit_app.py
 | 在线轨迹观察         | `ejagent.kernel` 中的 `TrajectoryMonitor` |
 
 这些接口保持精简并且不绑定 Provider，通过 `AgentHarness` 组合应用需要的能力。
-内置在线监控器、评估器接口和轨迹上下文适配器目前位于内部包 `ejagent._trajectory`，
-尚未成为稳定的顶层 API。
+底层在线监控器和轨迹上下文适配器位于内部包 `ejagent._trajectory`。应用可以通过
+公开的 `ejagent.evaluation` 模块配置确定性验收标准、证据来源和验证方法。
 
 ## 内置能力
 
@@ -173,8 +189,8 @@ uv run streamlit run examples/streamlit_app.py
 - 可选的在线轨迹评估与面向下一次决策的上下文反馈
 
 当前每个 `AgentHarness` 管理一个逻辑 Agent，尚未实现多 Agent 协调和任意时刻的
-mid-Run 暂停／恢复。依据轨迹自动拒绝动作、强制重新规划和完成审核拦截仍属于后续策略
-工作；当前评估用于模型反馈和 Audit，不覆盖既有终止决策。
+mid-Run 暂停／恢复。依据轨迹自动拒绝动作、强制重新规划仍属于后续策略工作。完成
+审核拦截已作为独立的显式策略提供，默认仍仅观察。
 
 ## 文档
 

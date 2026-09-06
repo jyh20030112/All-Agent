@@ -125,6 +125,20 @@ harness = AgentHarness(
 )
 ```
 
+## Evaluate Task Results
+
+Use `ejagent.evaluation` to bind an immutable `EvaluationPlan` to each Run,
+read versioned evidence, and run deterministic acceptance checks. Built-in
+file and probe sources share `GoalEvaluator`; `EvaluationMonitor` feeds verified
+results into trajectory analysis and optional model Context. Missing evidence
+remains unknown, and changed evidence invalidates previous conclusions.
+
+Deterministic checks make no model requests. Add an optional `ModelJudge` for
+explicit semantic criteria, and opt into `CompletionPolicy(CompletionMode.ENFORCE)`
+to retry rejected completions within the same Run. Observation remains the default.
+See the [evaluation guide](docs/evaluation.md) for Harness wiring, custom checks,
+report logs, and the credential-free `examples/evaluate_artifact.py` example.
+
 ## Explore the Harness in Streamlit
 
 The repository includes an interactive app for exploring Harness behavior.
@@ -142,20 +156,25 @@ records. Harness settings are captured when you click **Start**; stop the
 session before changing them.
 
 **Trajectory feedback** is enabled by default in this app and can be disabled
-before starting. The host evaluator checks three requirements from actual probe
+before starting. By default, the evaluator checks three requirements from actual probe
 records for each Run: A completes, B completes, and a completed A/B pair overlaps.
 It does not grade arbitrary chat tasks. The **Trajectory** tab shows checkpoint
 progress, cycle assessments, completion advice, and the transient instructions
 included in model contexts. Detailed views cover the latest Run in the current
-session; only trajectory receipts remain in durable Audit after restarting.
+session; full reports persist in the session folder's `evaluations/` directory,
+with associated receipts in durable Audit.
 
 For a deterministic feedback demonstration, choose demo mode and click
 **Controls → Run trajectory recovery**. The model alternates single probes until
 the analyzer confirms a cycle, then responds to that Context by requesting both
 probes together. Allow at least eight turns and 160 demo tokens. Ordinary parallel
 validation remains available, and the same evaluator and Context wiring apply to
-the real Provider mode. Completion advice remains observational; the Kernel does
-not force continuation when completion verification fails.
+the real Provider mode. Enable **Semantic completion review** for a separate
+final-answer judge and **Require completion approval** for bounded same-Run
+retries. Demo mode uses a deterministic judge stand-in. The Trajectory tab shows
+item reasons, evidence versions, missing evidence, and separate Actor/judge costs.
+With approval required, **Run completion recovery** demonstrates a rejected claim
+followed by verified completion in the same Run (three demo turns).
 
 ## Customize Every Boundary
 
@@ -171,8 +190,9 @@ not force continuation when completion verification fails.
 
 These are narrow, provider-neutral contracts. Implement only the part your
 application needs, then compose it through `AgentHarness`. The built-in online
-monitor, evaluator interface, and trajectory Context adapter currently live in
-the internal `ejagent._trajectory` package; they are not stable top-level APIs.
+low-level monitor and trajectory Context adapter live in the internal
+`ejagent._trajectory` package. Applications can use the public
+`ejagent.evaluation` module for deterministic criteria, sources, and checks.
 
 ## Built-in Capabilities
 
@@ -189,8 +209,8 @@ the internal `ejagent._trajectory` package; they are not stable top-level APIs.
 
 Each `AgentHarness` currently manages one logical agent. Multi-agent coordination
 and arbitrary mid-Run pause/resume are not implemented. Trajectory-based Action
-denial, forced replanning, and completion enforcement remain policy work; current
-assessments inform the model and Audit without overriding terminal decisions.
+denial and forced replanning remain policy work. Completion enforcement is
+available as an explicit, independently configured policy.
 
 ## Documentation
 
