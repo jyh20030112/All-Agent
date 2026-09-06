@@ -20,7 +20,7 @@ from ejagent.contracts.context import (
     ContextView,
 )
 from ejagent.contracts.control import CancellationToken
-from ejagent.contracts.json import JsonValue
+from ejagent.contracts.json import JsonValue, thaw_json_value
 from ejagent.contracts.lifecycle import ManagedResource
 from ejagent.contracts.messages import TransientInstruction
 
@@ -261,7 +261,7 @@ class TrajectoryContextProjector:
             "fact_id": fact.fact_id,
             "subject": fact.subject,
             "predicate": fact.predicate,
-            "value": fact.value,
+            "value": thaw_json_value(fact.value),
             "scope": list(fact.scope),
             "source": fact.source,
             "observed_at": fact.observed_at.isoformat(),

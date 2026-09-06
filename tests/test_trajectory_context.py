@@ -219,6 +219,21 @@ class TrajectoryContextPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('"value":"green"', instruction.content)
         self.assertIn("Replan from the Goal", payload["instruction"])
 
+    async def test_nested_fact_values_are_projected_as_json(self) -> None:
+        value: JsonValue = {"routes": [{"color": "blue", "healthy": True}]}
+        frame = _frame(TrajectoryContextEventKind.FACTS_UPDATED)
+        frame = replace(
+            frame,
+            checkpoint=replace(frame.checkpoint, facts=(_fact("routes", value),)),
+        )
+
+        view = await self._build(frame)
+
+        instruction = view.messages[-1]
+        assert isinstance(instruction, TransientInstruction)
+        payload = json.loads(instruction.content)["trajectory_context"]
+        self.assertEqual(payload["current_facts"][0]["value"], value)
+
     async def test_external_change_marks_historical_fact_as_invalidated(self) -> None:
         view = await self._build(
             _frame(TrajectoryContextEventKind.EXTERNAL_STATE_CHANGED)
