@@ -154,6 +154,7 @@ class OpenAIModelPortTests(unittest.IsolatedAsyncioTestCase):
         )
         await port.start()
         request = ModelRequest(
+            max_output_tokens=128,
             messages=(
                 SystemMessage("system"),
                 UserMessage("你好"),
@@ -190,6 +191,7 @@ class OpenAIModelPortTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(completed.message, AssistantMessage("答案"))
         self.assertEqual(completed.usage.input_tokens, 7)  # type: ignore[union-attr]
         sent = completions.requests[0]
+        self.assertEqual(sent["max_completion_tokens"], 128)
         self.assertEqual(sent["messages"][1], {"role": "user", "content": "你好"})
         self.assertEqual(
             sent["messages"][2]["tool_calls"][0]["function"]["arguments"],

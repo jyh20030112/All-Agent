@@ -176,6 +176,7 @@ class AnthropicModelPortTests(unittest.IsolatedAsyncioTestCase):
         )
         await port.start()
         request = ModelRequest(
+            max_output_tokens=128,
             messages=(
                 SystemMessage("stable"),
                 UserMessage("hello"),
@@ -199,6 +200,7 @@ class AnthropicModelPortTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
+        # The request cap is lower than the model configuration cap (512).
         normalized = [
             event
             async for event in port.stream(
@@ -207,6 +209,7 @@ class AnthropicModelPortTests(unittest.IsolatedAsyncioTestCase):
             )
         ]
 
+        self.assertEqual(messages.requests[0]["max_tokens"], 128)
         self.assertEqual(normalized[0], ModelThinkingDelta("想"))
         self.assertEqual(normalized[1], ModelTextDelta("答"))
         completed = normalized[2]

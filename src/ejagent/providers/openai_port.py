@@ -125,6 +125,8 @@ class OpenAIModelPort(ModelPort):
         }
         if self.config.include_usage:
             options["stream_options"] = {"include_usage": True}
+        if request.max_output_tokens is not None:
+            options["max_completion_tokens"] = request.max_output_tokens
 
         response: Any | None = None
         content_parts: list[str] = []

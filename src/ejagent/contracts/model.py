@@ -74,8 +74,15 @@ class ModelRequest:
 
     messages: tuple[ContextMessage, ...]
     tools: tuple[ToolDefinition, ...] = ()
+    max_output_tokens: int | None = None
 
     def __post_init__(self) -> None:
+        if self.max_output_tokens is not None and (
+            isinstance(self.max_output_tokens, bool)
+            or not isinstance(self.max_output_tokens, int)
+            or self.max_output_tokens <= 0
+        ):
+            raise ValueError("max_output_tokens must be a positive integer or None")
         object.__setattr__(self, "messages", tuple(self.messages))
         if not all(is_context_message(message) for message in self.messages):
             raise TypeError("model messages must contain ContextMessage values")

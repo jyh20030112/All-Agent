@@ -114,7 +114,9 @@ class AnthropicModelPort(ModelPort):
             )
         options: dict[str, Any] = {
             "model": self.config.model,
-            "max_tokens": self.config.max_tokens,
+            "max_tokens": min(self.config.max_tokens, request.max_output_tokens)
+            if request.max_output_tokens is not None
+            else self.config.max_tokens,
             "temperature": self.config.temperature,
             "messages": messages,
         }
