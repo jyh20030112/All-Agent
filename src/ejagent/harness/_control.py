@@ -5,6 +5,7 @@ from collections import deque
 from dataclasses import dataclass
 
 from ejagent.contracts.control import ControlReceipt, SteeringInput
+from ejagent.contracts.evaluation import EvaluationPlan
 from ejagent.contracts.runs import RunOutcome
 
 
@@ -61,6 +62,7 @@ class FollowUpHandle:
 class _QueuedFollowUp:
     task: str
     handle: FollowUpHandle
+    evaluation_plan: EvaluationPlan | None = None
 
 
 class _RunControls:

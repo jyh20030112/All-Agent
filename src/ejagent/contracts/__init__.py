@@ -24,6 +24,14 @@ from ejagent.contracts.control import (
     SteeringInput,
 )
 from ejagent.contracts.conversation import ConversationSnapshot
+from ejagent.contracts.evaluation import (
+    CompletionCandidate,
+    CompletionMode,
+    CompletionPolicy,
+    EvaluationCriterion,
+    EvaluationPlan,
+    ToolObservation,
+)
 from ejagent.contracts.json import (
     JsonObject,
     JsonScalar,
@@ -93,6 +101,12 @@ from ejagent.contracts.tools import (
 from ejagent.contracts.usage import RunUsage
 
 __all__ = [
+    "CompletionCandidate",
+    "CompletionMode",
+    "CompletionPolicy",
+    "EvaluationCriterion",
+    "EvaluationPlan",
+    "ToolObservation",
     "AssistantMessage",
     "AuditReader",
     "AuditRecord",

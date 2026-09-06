@@ -7,6 +7,11 @@ from enum import StrEnum
 from typing import Protocol
 
 from ejagent.contracts.control import CancellationToken
+from ejagent.contracts.evaluation import (
+    CompletionCandidate,
+    EvaluationPlan,
+    ToolObservation,
+)
 
 
 def _required_text(value: object, label: str) -> str:
@@ -80,8 +85,34 @@ class CheckpointSignal:
     causally_complete: bool = True
     unattributed_action_ids: tuple[str, ...] = ()
     causal_exclusion_reason: str | None = None
+    evaluation_plan: EvaluationPlan | None = None
+    task: str | None = None
+    completion_candidate: CompletionCandidate | None = None
+    tool_observations: tuple[ToolObservation, ...] = ()
+    observations_complete: bool = True
 
     def __post_init__(self) -> None:
+        if self.evaluation_plan is not None and not isinstance(
+            self.evaluation_plan, EvaluationPlan
+        ):
+            raise TypeError("evaluation_plan must be EvaluationPlan or None")
+        if self.task is not None and not isinstance(self.task, str):
+            raise TypeError("task must be text or None")
+        if self.completion_candidate is not None:
+            if not isinstance(self.completion_candidate, CompletionCandidate):
+                raise TypeError("completion_candidate must be CompletionCandidate")
+            if self.trigger is not CheckpointTrigger.COMPLETION_PROPOSED:
+                raise ValueError("completion candidate requires completion trigger")
+        observations = tuple(self.tool_observations)
+        if len(observations) > 128 or not all(
+            isinstance(item, ToolObservation) for item in observations
+        ):
+            raise ValueError(
+                "tool_observations must contain at most 128 ToolObservation values"
+            )
+        if not isinstance(self.observations_complete, bool):
+            raise TypeError("observations_complete must be boolean")
+        object.__setattr__(self, "tool_observations", observations)
         _required_text(self.run_id, "signal run_id")
         if not isinstance(self.trigger, CheckpointTrigger):
             raise TypeError("signal trigger must be a CheckpointTrigger")

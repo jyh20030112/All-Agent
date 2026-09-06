@@ -78,6 +78,20 @@ class _RunWorkspace:
         self.append(message)
         return message
 
+    def discard_completion_claim(self, message: AssistantMessage) -> None:
+        """Retain execution protocol, but omit rejected final prose from Conversation."""
+
+        for messages in (self._messages, self._delta):
+            for index in range(len(messages) - 1, -1, -1):
+                if messages[index] is message:
+                    if message.tool_calls:
+                        messages[index] = AssistantMessage(
+                            tool_calls=message.tool_calls
+                        )
+                    else:
+                        messages.pop(index)
+                    break
+
     def record_tool_call(self, call: ToolCall) -> bool:
         """Update the repeat guard and return whether its limit was reached."""
 

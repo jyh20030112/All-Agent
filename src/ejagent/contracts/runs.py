@@ -5,6 +5,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
+from ejagent.contracts.evaluation import (
+    CompletionMode,
+    CompletionPolicy,
+    EvaluationPlan,
+)
 from ejagent.contracts.json import JsonObject, freeze_json_object
 from ejagent.contracts.messages import ConversationMessage, is_conversation_message
 from ejagent.contracts.usage import RunUsage
@@ -45,6 +50,7 @@ class StopReason(StrEnum):
     COMPACTION_FAILED = "compaction_failed"
     PERSISTENCE_FAILED = "persistence_failed"
     RUNTIME_ERROR = "runtime_error"
+    COMPLETION_AUDIT_FAILED = "completion_audit_failed"
 
 
 class RunPhase(StrEnum):
@@ -113,8 +119,21 @@ class RunSpec:
     limits: RunLimits = field(default_factory=RunLimits)
     configuration_revision: str = "default"
     metadata: JsonObject = field(default_factory=dict)
+    evaluation_plan: EvaluationPlan | None = None
+    completion_policy: CompletionPolicy = field(default_factory=CompletionPolicy)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.completion_policy, CompletionPolicy):
+            raise TypeError("completion_policy must be CompletionPolicy")
+        if (
+            self.completion_policy.mode is CompletionMode.ENFORCE
+            and self.evaluation_plan is None
+        ):
+            raise ValueError("completion enforcement requires an evaluation plan")
+        if self.evaluation_plan is not None and not isinstance(
+            self.evaluation_plan, EvaluationPlan
+        ):
+            raise TypeError("evaluation_plan must be EvaluationPlan or None")
         if not isinstance(self.run_id, str) or not self.run_id.strip():
             raise ValueError("run_id must not be empty")
         if isinstance(self.base_revision, bool) or not isinstance(

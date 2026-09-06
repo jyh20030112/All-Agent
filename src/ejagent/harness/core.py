@@ -19,6 +19,11 @@ from ejagent.contracts.control import (
     SteeringInput,
 )
 from ejagent.contracts.conversation import ConversationSnapshot
+from ejagent.contracts.evaluation import (
+    CompletionMode,
+    CompletionPolicy,
+    EvaluationPlan,
+)
 from ejagent.contracts.json import JsonValue
 from ejagent.contracts.lifecycle import ManagedResource
 from ejagent.contracts.messages import ConversationMessage
@@ -90,6 +95,7 @@ class AgentHarness:
         tools: ToolExecutor,
         context: ContextPipeline | None = None,
         trajectory: TrajectoryMonitor | None = None,
+        completion_policy: CompletionPolicy | None = None,
         initial_messages: Iterable[ConversationMessage] = (),
         store: SessionStore | None = None,
         observers: Iterable[RunObserver] = (),
@@ -123,6 +129,14 @@ class AgentHarness:
             agent_id=agent_id,
             conversation=ConversationSnapshot(messages=tuple(initial_messages)),
         )
+        self._completion_policy = completion_policy or CompletionPolicy()
+        if not isinstance(self._completion_policy, CompletionPolicy):
+            raise TypeError("completion_policy must be CompletionPolicy")
+        if (
+            self._completion_policy.mode is CompletionMode.ENFORCE
+            and trajectory is None
+        ):
+            raise ValueError("completion enforcement requires a trajectory monitor")
         self._agent_id = agent_id
         self._model = model
         self._tools = tools
@@ -150,6 +164,7 @@ class AgentHarness:
                 self._tools,
                 self._context,
                 *self._observers,
+                *getattr(trajectory, "resources", ()),
                 *resources,
             )
         )
@@ -239,6 +254,7 @@ class AgentHarness:
         *,
         limits: RunLimits | None = None,
         metadata: Mapping[str, JsonValue] | None = None,
+        evaluation_plan: EvaluationPlan | None = None,
     ) -> RunOutcome:
         """Run one task after earlier calls, then atomically commit on success."""
 
@@ -249,6 +265,7 @@ class AgentHarness:
             task=task,
             limits=limits,
             metadata=metadata,
+            evaluation_plan=evaluation_plan,
         )
 
     async def continue_run(
@@ -256,6 +273,7 @@ class AgentHarness:
         *,
         limits: RunLimits | None = None,
         metadata: Mapping[str, JsonValue] | None = None,
+        evaluation_plan: EvaluationPlan | None = None,
     ) -> RunOutcome:
         """Continue committed Conversation without appending a user message."""
 
@@ -264,6 +282,7 @@ class AgentHarness:
             task=None,
             limits=limits,
             metadata=metadata,
+            evaluation_plan=evaluation_plan,
         )
 
     def cancel(self, reason: str | None = None) -> bool:
@@ -292,11 +311,17 @@ class AgentHarness:
             status = ControlStatus.QUEUE_FULL
         return ControlReceipt(input_id, ControlKind.STEERING, status)
 
-    def follow_up(self, task: str) -> FollowUpHandle:
+    def follow_up(
+        self, task: str, *, evaluation_plan: EvaluationPlan | None = None
+    ) -> FollowUpHandle:
         """Submit an independent FIFO Run to follow the active Run chain."""
 
         if not isinstance(task, str) or not task.strip():
             raise ValueError("follow-up task must not be empty")
+        if evaluation_plan is not None and not isinstance(
+            evaluation_plan, EvaluationPlan
+        ):
+            raise TypeError("evaluation_plan must be EvaluationPlan or None")
         input_id = uuid4().hex
         if self._closing or self._status is HarnessStatus.CLOSED:
             status = ControlStatus.CLOSED
@@ -309,7 +334,9 @@ class AgentHarness:
         receipt = ControlReceipt(input_id, ControlKind.FOLLOW_UP, status)
         handle = FollowUpHandle(receipt)
         if receipt.accepted:
-            self._follow_ups.append(_QueuedFollowUp(task.strip(), handle))
+            self._follow_ups.append(
+                _QueuedFollowUp(task.strip(), handle, evaluation_plan)
+            )
             self._outstanding_follow_ups += 1
             if self._follow_up_worker is None:
                 self._follow_up_worker = asyncio.create_task(self._run_follow_ups())
@@ -354,7 +381,12 @@ class AgentHarness:
         task: str | None,
         limits: RunLimits | None,
         metadata: Mapping[str, JsonValue] | None,
+        evaluation_plan: EvaluationPlan | None,
     ) -> RunOutcome:
+        if evaluation_plan is not None and not isinstance(
+            evaluation_plan, EvaluationPlan
+        ):
+            raise TypeError("evaluation_plan must be EvaluationPlan or None")
         await self.start()
         async with self._run_lock:
             if self._closing or self._status is HarnessStatus.CLOSED:
@@ -370,6 +402,8 @@ class AgentHarness:
                 limits=limits or self._limits,
                 configuration_revision=self._configuration_revision,
                 metadata=metadata or {},
+                evaluation_plan=evaluation_plan,
+                completion_policy=self._completion_policy,
             )
             cancellation = CancellationSource()
             controls = _RunControls(self._steering_capacity)
@@ -410,6 +444,7 @@ class AgentHarness:
                         outcome = await self._execute(
                             intent=RunIntent.TASK,
                             task=queued.task,
+                            evaluation_plan=queued.evaluation_plan,
                             limits=None,
                             metadata={
                                 "control_input_id": queued.handle.receipt.input_id

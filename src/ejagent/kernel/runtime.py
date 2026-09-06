@@ -5,6 +5,7 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import monotonic
 
@@ -23,6 +24,11 @@ from ejagent.contracts.control import (
     RunCancelledError,
     RunControlSource,
     SteeringInput,
+)
+from ejagent.contracts.evaluation import (
+    CompletionCandidate,
+    CompletionMode,
+    ToolObservation,
 )
 from ejagent.contracts.json import (
     JsonObject,
@@ -161,6 +167,13 @@ class _AuditTrail:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _TrajectoryCapture:
+    active: bool
+    completion_allowed: bool | None = None
+    completion_feedback: str | None = None
+
+
 class RuntimeKernel:
     """Execute one deterministic Model-Tool Run over a private workspace."""
 
@@ -204,19 +217,28 @@ class RuntimeKernel:
                 "base_revision": spec.base_revision,
                 "intent": spec.intent.value,
                 "configuration_revision": spec.configuration_revision,
+                "evaluation_plan_version": (
+                    spec.evaluation_plan.version if spec.evaluation_plan else None
+                ),
             },
         )
         trajectory = self._trajectory
         started_at = self._monotonic_clock() if trajectory is not None else 0.0
         actor_action_count = 0
-        trajectory_active = trajectory is not None
+        capture = _TrajectoryCapture(trajectory is not None)
+        completion_rejections = 0
+        completion_feedback: tuple[TransientInstruction, ...] = ()
+        if spec.completion_policy.mode is CompletionMode.ENFORCE and trajectory is None:
+            raise ValueError("completion enforcement requires a trajectory monitor")
 
         try:
             if trajectory is not None:
-                trajectory_active = await self._capture_trajectory(
+                capture = await self._capture_trajectory(
                     trajectory,
                     CheckpointSignal(
                         run_id=spec.run_id,
+                        evaluation_plan=spec.evaluation_plan,
+                        task=spec.task,
                         trigger=CheckpointTrigger.BASELINE,
                         turn=0,
                         cumulative_cost=self._trajectory_cost(
@@ -256,11 +278,13 @@ class RuntimeKernel:
                     workspace,
                     cancellation=token,
                     turn=turn,
-                    transient_instructions=tuple(
+                    transient_instructions=completion_feedback
+                    + tuple(
                         TransientInstruction(item.content, "steering")
                         for item in steering
                     ),
                 )
+                completion_feedback = ()
                 audit.append(
                     "context_built",
                     {
@@ -293,11 +317,18 @@ class RuntimeKernel:
 
                 if not message.tool_calls:
                     assert message.content is not None
-                    if trajectory_active and trajectory is not None:
-                        trajectory_active = await self._capture_trajectory(
+                    capture = _TrajectoryCapture(capture.active)
+                    if capture.active and trajectory is not None:
+                        capture = await self._capture_trajectory(
                             trajectory,
                             CheckpointSignal(
                                 run_id=spec.run_id,
+                                evaluation_plan=spec.evaluation_plan,
+                                task=spec.task,
+                                completion_candidate=CompletionCandidate(
+                                    message.content[:65_536],
+                                    truncated=len(message.content) > 65_536,
+                                ),
                                 trigger=CheckpointTrigger.COMPLETION_PROPOSED,
                                 turn=turn,
                                 cumulative_cost=self._trajectory_cost(
@@ -309,6 +340,22 @@ class RuntimeKernel:
                             cancellation=token,
                             audit=audit,
                         )
+                    if (
+                        spec.completion_policy.mode is CompletionMode.ENFORCE
+                        and capture.completion_allowed is not True
+                    ):
+                        completion_rejections += 1
+                        failure, completion_feedback = self._reject_completion(
+                            workspace,
+                            usage,
+                            audit,
+                            message,
+                            capture,
+                            completion_rejections,
+                        )
+                        if failure is not None:
+                            return failure
+                        continue
                     audit.append("turn_completed", {"turn": turn})
                     return self._terminal(
                         workspace,
@@ -356,11 +403,27 @@ class RuntimeKernel:
                         and execution.control is not ToolControl.CONTINUE
                     ):
                         terminal = execution
-                if trajectory_active and trajectory is not None:
-                    trajectory_active = await self._capture_trajectory(
+                if capture.active and trajectory is not None:
+                    capture = await self._capture_trajectory(
                         trajectory,
                         CheckpointSignal(
                             run_id=spec.run_id,
+                            evaluation_plan=spec.evaluation_plan,
+                            task=spec.task,
+                            tool_observations=tuple(
+                                ToolObservation(
+                                    call.id,
+                                    call.name,
+                                    f"audit:{spec.run_id}:tool:{call.id}",
+                                    execution.is_error,
+                                )
+                                for call, execution in zip(
+                                    message.tool_calls[:128],
+                                    executions[:128],
+                                    strict=True,
+                                )
+                            ),
+                            observations_complete=len(message.tool_calls) <= 128,
                             trigger=CheckpointTrigger.TOOL_BATCH_COMPLETED,
                             turn=turn,
                             cumulative_cost=self._trajectory_cost(
@@ -377,6 +440,56 @@ class RuntimeKernel:
                         audit=audit,
                     )
                 if terminal is not None:
+                    capture = _TrajectoryCapture(capture.active)
+                    if (
+                        terminal.control is ToolControl.COMPLETE
+                        and spec.evaluation_plan is not None
+                        and capture.active
+                        and trajectory is not None
+                    ):
+                        proposed_output = terminal.output
+                        capture = await self._capture_trajectory(
+                            trajectory,
+                            CheckpointSignal(
+                                run_id=spec.run_id,
+                                trigger=CheckpointTrigger.COMPLETION_PROPOSED,
+                                turn=turn,
+                                cumulative_cost=self._trajectory_cost(
+                                    usage,
+                                    actor_action_count=actor_action_count,
+                                    started_at=started_at,
+                                ),
+                                evaluation_plan=spec.evaluation_plan,
+                                task=spec.task,
+                                completion_candidate=(
+                                    CompletionCandidate(
+                                        proposed_output[:65_536],
+                                        len(proposed_output) > 65_536,
+                                    )
+                                    if proposed_output is not None
+                                    else None
+                                ),
+                            ),
+                            cancellation=token,
+                            audit=audit,
+                        )
+                    if (
+                        terminal.control is ToolControl.COMPLETE
+                        and spec.completion_policy.mode is CompletionMode.ENFORCE
+                        and capture.completion_allowed is not True
+                    ):
+                        completion_rejections += 1
+                        failure, completion_feedback = self._reject_completion(
+                            workspace,
+                            usage,
+                            audit,
+                            message,
+                            capture,
+                            completion_rejections,
+                        )
+                        if failure is not None:
+                            return failure
+                        continue
                     audit.append("turn_completed", {"turn": turn})
                     return self._tool_terminal(
                         workspace,
@@ -459,6 +572,52 @@ class RuntimeKernel:
                     # Trajectory observation is fail-open in the first Runtime phase.
                     pass
 
+    def _reject_completion(
+        self,
+        workspace: _RunWorkspace,
+        usage: _UsageAccumulator,
+        audit: _AuditTrail,
+        message: AssistantMessage,
+        capture: _TrajectoryCapture,
+        attempt: int,
+    ) -> tuple[RunOutcome | None, tuple[TransientInstruction, ...]]:
+        workspace.discard_completion_claim(message)
+        spec = workspace.spec
+        retry = (
+            capture.active
+            and attempt <= spec.completion_policy.max_retries
+            and workspace.turn < spec.limits.max_turns
+            and self._budget_failure(spec, usage) is None
+        )
+        audit.append(
+            "completion_rejected",
+            {
+                "turn": workspace.turn,
+                "attempt": attempt,
+                "retry": retry,
+                "feedback": capture.completion_feedback,
+            },
+        )
+        audit.append("turn_completed", {"turn": workspace.turn})
+        if not retry:
+            return self._failed(
+                workspace,
+                usage,
+                audit,
+                stop_reason=StopReason.COMPLETION_AUDIT_FAILED,
+                failure=RunFailure(
+                    phase=RunPhase.CONTROL,
+                    code=FailureCode.POLICY_REJECTED,
+                    message="Completion could not be verified within the configured retry and Run limits",
+                ),
+            ), ()
+        feedback = TransientInstruction(
+            capture.completion_feedback
+            or "Completion could not be verified. Gather valid evidence before claiming completion again.",
+            "completion_audit",
+        )
+        return None, (feedback,)
+
     async def _capture_trajectory(
         self,
         trajectory: TrajectoryMonitor,
@@ -466,12 +625,22 @@ class RuntimeKernel:
         *,
         cancellation: CancellationToken,
         audit: _AuditTrail,
-    ) -> bool:
+    ) -> _TrajectoryCapture:
         try:
             receipt = await trajectory.capture(signal, cancellation=cancellation)
             checkpoint_id = receipt.checkpoint_id
             verdict = receipt.verdict
             completion_allowed = receipt.completion_allowed
+            feedback = getattr(receipt, "completion_feedback", None)
+            if feedback is not None and (
+                not isinstance(feedback, str) or len(feedback) > 16_384
+            ):
+                raise TypeError("completion_feedback must be bounded text or None")
+            report_ref = getattr(receipt, "report_ref", None)
+            if report_ref is not None and (
+                not isinstance(report_ref, str) or not report_ref
+            ):
+                raise TypeError("evaluation report_ref must be non-empty text or None")
             if not isinstance(checkpoint_id, str) or not checkpoint_id.strip():
                 raise TypeError("trajectory checkpoint_id must be non-empty text")
             if not isinstance(verdict, str) or not verdict.strip():
@@ -491,7 +660,7 @@ class RuntimeKernel:
                     "message": str(exc),
                 },
             )
-            return False
+            return _TrajectoryCapture(False)
         audit.append(
             "trajectory_checkpointed",
             {
@@ -499,9 +668,10 @@ class RuntimeKernel:
                 "checkpoint_id": checkpoint_id,
                 "verdict": verdict,
                 "completion_allowed": completion_allowed,
+                "evaluation_report_ref": report_ref,
             },
         )
-        return True
+        return _TrajectoryCapture(True, completion_allowed, feedback)
 
     def _trajectory_cost(
         self,
