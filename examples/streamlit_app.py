@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Callable
 from pathlib import Path
 
 import streamlit as st
 from streamlit_runtime import (
+    TRAJECTORY_DEMO_TASK,
     DemoValidationModel,
     ProbeExecution,
     RuntimeConfig,
@@ -109,6 +111,13 @@ def _render_sidebar() -> None:
             step=0.25,
             disabled=active,
         )
+        trajectory_enabled = st.checkbox(
+            "Trajectory feedback", value=True, disabled=active
+        )
+        st.caption(
+            "Evaluates probe A, probe B, and their overlap for each Run. "
+            "Other chat goals are outside this evaluation."
+        )
 
         if mode == _PROVIDER_MODE:
             configured_model = os.getenv("CHAT_MODEL") or "not configured"
@@ -125,6 +134,7 @@ def _render_sidebar() -> None:
                         max_turns=int(max_turns),
                         max_tokens=int(max_tokens) if token_budget_enabled else None,
                         probe_delay_seconds=float(probe_delay),
+                        trajectory_enabled=trajectory_enabled,
                     ),
                     mode,
                 )
@@ -192,7 +202,7 @@ def _render_chat(
         except Exception as exc:
             st.error(f"Run submission failed: {type(exc).__name__}: {exc}")
         else:
-            st.rerun(scope="fragment")
+            st.rerun()
 
 
 def _render_controls(
@@ -211,7 +221,22 @@ def _render_controls(
             "Call parallel_probe_a and parallel_probe_b together, then report "
             "whether they overlapped."
         )
-        st.rerun(scope="fragment")
+        st.rerun()
+
+    if st.button(
+        "Run trajectory recovery",
+        disabled=(
+            snapshot.status is HarnessStatus.RUNNING
+            or not controller.config.trajectory_enabled
+        ),
+    ):
+        controller.start_run(TRAJECTORY_DEMO_TASK)
+        st.rerun()
+    st.caption(
+        "Recovery demo: repeat sequential probes, then use confirmed-cycle feedback "
+        "to switch to a parallel batch. Demo mode takes 8 turns; allow at least 160 "
+        "demo tokens. Provider behavior and token usage can vary."
+    )
 
     if st.button(
         "Cancel active Run",
@@ -221,7 +246,7 @@ def _render_controls(
         st.session_state[_NOTICE_KEY] = (
             "Cancellation requested." if accepted else "No cancellable Run was active."
         )
-        st.rerun(scope="fragment")
+        st.rerun()
 
     with st.form("steering_form", clear_on_submit=True):
         steering = st.text_input("Steering instruction")
@@ -372,6 +397,64 @@ def _render_audits(audits: tuple[RunAudit, ...]) -> None:
             )
 
 
+def _render_trajectory(
+    controller: StreamlitRuntimeController, snapshot: RuntimeSnapshot
+) -> None:
+    st.subheader("Probe trajectory")
+    if not controller.config.trajectory_enabled:
+        st.info("Trajectory feedback is disabled. Stop the runtime to enable it.")
+        return
+    st.caption(
+        "Coverage measures three probe requirements: A completes, B completes, "
+        "and a completed pair overlaps. Completion advice does not block the Run. "
+        "Details below cover the latest Run in this runtime; Audit retains receipts."
+    )
+    updates = snapshot.trajectory_updates
+    if not updates:
+        st.info(
+            "Run parallel validation or trajectory recovery to collect checkpoints."
+        )
+        return
+    latest = updates[-1]
+    progress = latest.assessment.progress[-1]
+    st.caption(f"Run: {latest.signal.run_id}")
+    columns = st.columns(3)
+    columns[0].metric(
+        "Requirement coverage", f"{progress.current_requirement_coverage:.0%}"
+    )
+    columns[1].metric("Best coverage", f"{progress.best_requirement_coverage:.0%}")
+    columns[2].metric("Assessment", latest.verdict)
+    st.dataframe(
+        [
+            {
+                "Checkpoint": item.checkpoint_id,
+                "Turn": item.signal.turn,
+                "Trigger": item.signal.trigger.value,
+                "Coverage": item.assessment.progress[-1].current_requirement_coverage,
+                "Progress": item.assessment.progress[-1].status.value,
+                "Assessment": item.verdict,
+                "Event": item.context_event.kind.value,
+                "Completion allowed (advice)": item.completion_allowed,
+                "Actions": item.signal.cumulative_cost.actor_actions,
+            }
+            for item in updates
+        ],
+        hide_index=True,
+        width="stretch",
+    )
+    st.write("Current verified requirements")
+    st.json(dict(latest.checkpoint.requirements))
+    st.subheader("Trajectory instructions in model context")
+    st.caption(
+        "These are the actual instructions included in built model contexts. "
+        "Suspected cycles are withheld. Terminal checkpoint advice has no next "
+        "model call and therefore does not appear here."
+    )
+    for delivery in snapshot.trajectory_contexts:
+        with st.expander(f"Turn {delivery.turn} · {delivery.instruction.source}"):
+            st.json(json.loads(delivery.instruction.content))
+
+
 def _render_runtime(snapshot: RuntimeSnapshot) -> None:
     columns = st.columns(4)
     columns[0].metric("Status", snapshot.status.value)
@@ -424,8 +507,10 @@ def _runtime_fragment() -> None:
     status_columns[1].metric("Revision", snapshot.revision)
     status_columns[2].metric("Durable Runs", len(snapshot.audits))
 
-    chat_tab, controls_tab, probes_tab, runtime_tab, audit_tab = st.tabs(
-        ("Chat", "Controls", "Parallel tools", "Runtime", "Audit")
+    chat_tab, controls_tab, probes_tab, trajectory_tab, runtime_tab, audit_tab = (
+        st.tabs(
+            ("Chat", "Controls", "Parallel tools", "Trajectory", "Runtime", "Audit")
+        )
     )
     with chat_tab:
         _render_chat(controller, snapshot)
@@ -433,6 +518,8 @@ def _runtime_fragment() -> None:
         _render_controls(controller, snapshot)
     with probes_tab:
         _render_probes(snapshot.probes)
+    with trajectory_tab:
+        _render_trajectory(controller, snapshot)
     with runtime_tab:
         _render_runtime(snapshot)
     with audit_tab:
@@ -443,7 +530,7 @@ st.set_page_config(page_title="EJAgent Validation", page_icon="🥚", layout="wi
 st.title("EJAgent Runtime Validation")
 st.caption(
     "Exercise durable Conversation state, concurrent tools, live controls, "
-    "Run limits, revisions, and audit records from one page."
+    "trajectory feedback, Run limits, revisions, and audit records from one page."
 )
 _render_sidebar()
 _runtime_fragment()

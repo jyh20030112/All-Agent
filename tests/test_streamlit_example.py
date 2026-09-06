@@ -5,18 +5,44 @@ import sys
 import tempfile
 import time
 import unittest
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
-from ejagent.contracts import AssistantMessage, ControlStatus, RunStatus
+from ejagent.contracts import (
+    AssistantMessage,
+    CancellationToken,
+    ControlStatus,
+    ModelRequest,
+    ModelStreamEvent,
+    RunStatus,
+    TransientInstruction,
+)
 from ejagent.harness import HarnessStatus
 from examples.streamlit_runtime import (
+    TRAJECTORY_DEMO_TASK,
+    DemoValidationModel,
     RuntimeConfig,
     RuntimeSnapshot,
     StreamlitRuntimeController,
 )
+
+
+class _RecordingDemoModel(DemoValidationModel):
+    def __init__(self) -> None:
+        super().__init__()
+        self.requests: list[ModelRequest] = []
+
+    async def stream(
+        self,
+        request: ModelRequest,
+        *,
+        cancellation: CancellationToken,
+    ) -> AsyncIterator[ModelStreamEvent]:
+        self.requests.append(request)
+        async for event in super().stream(request, cancellation=cancellation):
+            yield event
 
 
 def _wait_for(
@@ -46,13 +72,24 @@ class StreamlitRuntimeControllerTests(unittest.TestCase):
         for controller in reversed(self.controllers):
             controller.close()
 
-    def controller(self, *, delay: float = 0.05) -> StreamlitRuntimeController:
+    def controller(
+        self,
+        *,
+        delay: float = 0.05,
+        trajectory_enabled: bool = True,
+        model: DemoValidationModel | None = None,
+        max_turns: int = 20,
+    ) -> StreamlitRuntimeController:
+        demo = model if model is not None else DemoValidationModel()
         controller = StreamlitRuntimeController(
             RuntimeConfig(
                 agent_id="streamlit-test",
                 store_root=self.store_root,
                 probe_delay_seconds=delay,
-            )
+                trajectory_enabled=trajectory_enabled,
+                max_turns=max_turns,
+            ),
+            model_factory=lambda: demo,
         )
         self.controllers.append(controller)
         return controller
@@ -83,6 +120,111 @@ class StreamlitRuntimeControllerTests(unittest.TestCase):
         self.assertEqual(restored_snapshot.revision, 1)
         self.assertEqual(restored_snapshot.messages, committed_messages)
         self.assertEqual(len(restored_snapshot.audits), 1)
+        self.assertEqual(restored_snapshot.trajectory_updates, ())
+        self.assertEqual(restored_snapshot.trajectory_contexts, ())
+
+    def test_trajectory_feedback_reaches_model_without_entering_conversation(
+        self,
+    ) -> None:
+        model = _RecordingDemoModel()
+        controller = self.controller(model=model)
+        controller.start_run("validate parallel execution")
+        snapshot = _wait_for(controller, lambda item: item.revision == 1)
+
+        self.assertEqual(
+            [
+                u.assessment.progress[-1].current_requirement_coverage
+                for u in snapshot.trajectory_updates
+            ],
+            [0.0, 1.0, 1.0],
+        )
+        self.assertTrue(snapshot.trajectory_updates[-1].completion_allowed)
+        self.assertEqual([item.turn for item in snapshot.trajectory_contexts], [1, 2])
+        for request, delivery in zip(
+            model.requests, snapshot.trajectory_contexts, strict=True
+        ):
+            self.assertIn(delivery.instruction, request.messages)
+        self.assertFalse(
+            any(
+                isinstance(message, TransientInstruction)
+                for message in snapshot.messages
+            )
+        )
+        self.assertFalse(
+            any(
+                isinstance(message, AssistantMessage)
+                and "trajectory_context" in (message.content or "")
+                for message in snapshot.messages
+            )
+        )
+
+    def test_cycle_feedback_changes_demo_actions_and_recovers_parallelism(self) -> None:
+        model = _RecordingDemoModel()
+        controller = self.controller(delay=0.01, model=model)
+        controller.start_run(TRAJECTORY_DEMO_TASK)
+        snapshot = _wait_for(controller, lambda item: item.revision == 1)
+
+        verdicts = [update.verdict for update in snapshot.trajectory_updates]
+        self.assertIn("cycle_suspected", verdicts)
+        self.assertIn("non_progress_cycle", verdicts)
+        deliveries = snapshot.trajectory_contexts
+        self.assertNotIn(
+            "trajectory:cycle_suspected",
+            [item.instruction.source for item in deliveries],
+        )
+        confirmed = next(
+            item
+            for item in deliveries
+            if item.instruction.source == "trajectory:cycle_confirmed"
+        )
+        self.assertIn(
+            confirmed.instruction, model.requests[confirmed.turn - 1].messages
+        )
+        batches = [
+            message.tool_calls
+            for message in snapshot.messages
+            if isinstance(message, AssistantMessage) and message.tool_calls
+        ]
+        self.assertEqual([len(batch) for batch in batches], [1, 1, 1, 1, 1, 1, 2])
+        assert snapshot.last_result is not None
+        self.assertEqual(snapshot.last_result.turns, 8)
+        self.assertTrue(snapshot.trajectory_updates[-1].completion_allowed)
+        self.assertTrue(
+            snapshot.trajectory_updates[-1].checkpoint.requirements["probes_overlapped"]
+        )
+
+    def test_disabled_feedback_preserves_original_context(self) -> None:
+        model = _RecordingDemoModel()
+        controller = self.controller(trajectory_enabled=False, model=model)
+        controller.start_run("validate parallel execution")
+        snapshot = _wait_for(controller, lambda item: item.revision == 1)
+
+        self.assertEqual(snapshot.trajectory_updates, ())
+        self.assertEqual(snapshot.trajectory_contexts, ())
+        self.assertFalse(
+            any(
+                isinstance(message, TransientInstruction)
+                and message.source.startswith("trajectory:")
+                for request in model.requests
+                for message in request.messages
+            )
+        )
+        self.assertFalse(
+            any(
+                record.kind.startswith("trajectory_")
+                for record in snapshot.audits[0].records
+            )
+        )
+
+    def test_recovery_requires_feedback_and_respects_turn_limit(self) -> None:
+        controller = self.controller(delay=0.01, trajectory_enabled=False, max_turns=8)
+        controller.start_run(TRAJECTORY_DEMO_TASK)
+        snapshot = _wait_for(
+            controller,
+            lambda item: item.status is HarnessStatus.READY and bool(item.audits),
+        )
+        self.assertEqual(len(snapshot.probes), 8)
+        self.assertNotEqual(snapshot.audits[0].result.status, RunStatus.COMPLETED)
 
     def test_cancel_stops_tools_without_advancing_revision(self) -> None:
         controller = self.controller(delay=0.5)
@@ -104,6 +246,25 @@ class StreamlitRuntimeControllerTests(unittest.TestCase):
         assert snapshot.latest_outcome is not None
         self.assertEqual(snapshot.latest_outcome.result.status, RunStatus.CANCELLED)
         self.assertTrue(all(probe.cancelled for probe in snapshot.probes))
+        cancelled_run_id = snapshot.trajectory_updates[0].signal.run_id
+        controller.start_run("validate after cancellation")
+        recovered = _wait_for(controller, lambda item: item.revision == 1)
+        self.assertNotEqual(
+            recovered.trajectory_updates[0].signal.run_id, cancelled_run_id
+        )
+        self.assertEqual(
+            recovered.trajectory_updates[0]
+            .assessment.progress[0]
+            .current_requirement_coverage,
+            0.0,
+        )
+        self.assertTrue(recovered.trajectory_updates[-1].completion_allowed)
+        self.assertTrue(
+            all(
+                item.run_id != cancelled_run_id
+                for item in recovered.trajectory_contexts
+            )
+        )
 
     def test_steering_and_follow_up_are_admitted_during_active_run(self) -> None:
         controller = self.controller(delay=0.1)
@@ -128,6 +289,16 @@ class StreamlitRuntimeControllerTests(unittest.TestCase):
         )
         self.assertEqual(len(snapshot.audits), 2)
         self.assertEqual(len(snapshot.probes), 4)
+        self.assertEqual(
+            snapshot.trajectory_updates[0]
+            .assessment.progress[0]
+            .current_requirement_coverage,
+            0.0,
+        )
+        self.assertEqual(
+            {item.run_id for item in snapshot.trajectory_contexts},
+            {snapshot.trajectory_updates[0].signal.run_id},
+        )
         self.assertTrue(
             any(
                 isinstance(message, AssistantMessage)
@@ -166,6 +337,7 @@ class StreamlitAppSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             app = AppTest.from_file(app_path, default_timeout=5).run()
             app.text_input[1].set_value(root).run()
+            app.slider[0].set_value(0.25).run()
             app.button[0].click().run()
             controller = app.session_state["ejagent_runtime_controller"]
             try:
@@ -174,6 +346,40 @@ class StreamlitAppSmokeTests(unittest.TestCase):
                     any(
                         metric.label == "Harness" and metric.value == "ready"
                         for metric in app.metric
+                    )
+                )
+                run = next(
+                    button
+                    for button in app.button
+                    if button.label == "Run parallel validation"
+                )
+                run.click().run()
+                self.assertFalse(app.exception)
+                _wait_for(controller, lambda item: item.revision == 1, timeout=5)
+                app.run()
+                self.assertFalse(app.exception)
+                self.assertTrue(
+                    any(
+                        metric.label == "Requirement coverage"
+                        and metric.value == "100%"
+                        for metric in app.metric
+                    )
+                )
+                self.assertTrue(any(item.label == "Trajectory" for item in app.tabs))
+                recover = next(
+                    button
+                    for button in app.button
+                    if button.label == "Run trajectory recovery"
+                )
+                recover.click().run()
+                self.assertFalse(app.exception)
+                _wait_for(controller, lambda item: item.revision == 2, timeout=5)
+                app.run()
+                self.assertFalse(app.exception)
+                self.assertTrue(
+                    any(
+                        "trajectory:cycle_confirmed" in item.label
+                        for item in app.expander
                     )
                 )
                 stop = next(button for button in app.button if button.label == "Stop")

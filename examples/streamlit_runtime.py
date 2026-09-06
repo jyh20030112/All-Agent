@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import threading
 from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
 from concurrent.futures import TimeoutError as FutureTimeoutError
@@ -10,9 +12,21 @@ from pathlib import Path
 from time import monotonic
 from typing import TypeVar
 
+from ejagent._trajectory import (
+    CheckpointEvaluation,
+    CheckpointEvaluationRequest,
+    EnvironmentFact,
+    OnlineTrajectoryMonitor,
+    TrajectoryCheckpoint,
+    TrajectoryContextBuffer,
+    TrajectoryContextPipeline,
+    TrajectoryUpdate,
+)
 from ejagent.contracts import (
     AssistantMessage,
     CancellationToken,
+    ContextRequest,
+    ContextView,
     ControlReceipt,
     ConversationMessage,
     JsonObject,
@@ -36,11 +50,22 @@ from ejagent.contracts import (
     thaw_json_value,
 )
 from ejagent.harness import AgentHarness, HarnessStatus
+from ejagent.kernel import CheckpointTrigger
 from ejagent.storage import JsonlSessionStore
 from ejagent.tools import FunctionTool, FunctionToolExecutor
 
 _ResultT = TypeVar("_ResultT")
 ModelFactory = Callable[[], ModelPort]
+PROBE_GOAL = (
+    "Validate this Run's probes: A completes, B completes, and a completed A/B "
+    "pair overlaps in time. This assessment covers only probe validation, not "
+    "other user goals."
+)
+TRAJECTORY_DEMO_TASK = (
+    "Demonstrate trajectory recovery. Alternate parallel_probe_a and "
+    "parallel_probe_b, one tool per turn. When trajectory context confirms a "
+    "cycle, change the plan: call both tools together, then report the result."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +78,7 @@ class RuntimeConfig:
     max_tokens: int | None = None
     max_repeated_tool_calls: int = 3
     probe_delay_seconds: float = 1.5
+    trajectory_enabled: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.agent_id, str) or not self.agent_id.strip():
@@ -61,6 +87,8 @@ class RuntimeConfig:
         object.__setattr__(self, "store_root", Path(self.store_root).expanduser())
         if self.probe_delay_seconds <= 0:
             raise ValueError("probe_delay_seconds must be greater than zero")
+        if not isinstance(self.trajectory_enabled, bool):
+            raise TypeError("trajectory_enabled must be a boolean")
         RunLimits(
             max_turns=self.max_turns,
             max_tokens=self.max_tokens,
@@ -103,6 +131,39 @@ class RuntimeSnapshot:
     controls: tuple[ControlReceipt, ...]
     probes: tuple[ProbeExecution, ...]
     last_error: str | None
+    trajectory_updates: tuple[TrajectoryUpdate, ...] = ()
+    trajectory_contexts: tuple[TrajectoryContextDelivery, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class TrajectoryContextDelivery:
+    """The trajectory instruction included in a built model ContextView."""
+
+    run_id: str
+    turn: int
+    instruction: TransientInstruction
+
+
+class _InspectableTrajectoryPipeline(TrajectoryContextPipeline):
+    def __init__(self, buffer: TrajectoryContextBuffer) -> None:
+        super().__init__(source=buffer)
+        self.deliveries: list[TrajectoryContextDelivery] = []
+
+    async def build(
+        self,
+        request: ContextRequest,
+        *,
+        cancellation: CancellationToken,
+    ) -> ContextView:
+        view = await super().build(request, cancellation=cancellation)
+        for message in view.messages:
+            if isinstance(message, TransientInstruction) and message.source.startswith(
+                "trajectory:"
+            ):
+                self.deliveries.append(
+                    TrajectoryContextDelivery(request.run_id, request.turn, message)
+                )
+        return view
 
 
 @dataclass(slots=True)
@@ -152,8 +213,84 @@ class _ProbeRecorder:
         return (*self.completed, *running)
 
 
+class _ProbeCheckpointEvaluator:
+    """Evaluate only this Run's recorded probe executions, never model claims."""
+
+    def __init__(self, recorder: _ProbeRecorder) -> None:
+        self._recorder = recorder
+        self._offsets: dict[str, int] = {}
+
+    async def evaluate(
+        self,
+        request: CheckpointEvaluationRequest,
+        *,
+        cancellation: CancellationToken,
+    ) -> CheckpointEvaluation:
+        cancellation.raise_if_cancelled()
+        run_id = request.signal.run_id
+        if request.signal.trigger is CheckpointTrigger.BASELINE:
+            self._offsets[run_id] = len(self._recorder.completed)
+        executions = tuple(
+            probe
+            for probe in self._recorder.completed[self._offsets[run_id] :]
+            if not probe.cancelled and probe.finished_at is not None
+        )
+        first = tuple(p for p in executions if p.tool_name == "parallel_probe_a")
+        second = tuple(p for p in executions if p.tool_name == "parallel_probe_b")
+        overlapped = any(
+            a.finished_at is not None
+            and b.finished_at is not None
+            and max(a.started_at, b.started_at) < min(a.finished_at, b.finished_at)
+            for a in first
+            for b in second
+        )
+        requirements: dict[str, bool | None] = {
+            "probe_a_completed": bool(first),
+            "probe_b_completed": bool(second),
+            "probes_overlapped": overlapped,
+        }
+        facts: JsonObject = dict(requirements)
+        fingerprint = hashlib.sha256(
+            json.dumps(facts, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        evidence_ref = f"probe-recorder:{run_id}:{fingerprint}"
+        previous = request.previous_checkpoint
+        gained = tuple(
+            name
+            for name, satisfied in requirements.items()
+            if satisfied is True
+            and (previous is None or previous.requirements.get(name) is not True)
+        )
+        fact = EnvironmentFact(
+            fact_id=f"probe-state:{fingerprint}",
+            subject="validation_probes",
+            predicate="verified_run_results",
+            value=facts,
+            scope=(run_id,),
+            source="Streamlit probe execution recorder",
+            observed_at=datetime.now(UTC),
+            checkpoint_id=request.checkpoint_id,
+            evidence_ref=evidence_ref,
+            freshness="Recomputed from completed executions at this checkpoint.",
+            authority="Host-recorded completion timestamps; cancelled probes excluded.",
+        )
+        return CheckpointEvaluation(
+            projection_version="streamlit-probes-v1",
+            state_fingerprint=fingerprint,
+            environment_facts=facts,
+            requirements=requirements,
+            constraints={},
+            new_evidence=tuple(f"{evidence_ref}:{name}" for name in gained),
+            facts=(fact,),
+            fact_capture_complete=True,
+        )
+
+    def close_run(self, run_id: str) -> None:
+        self._offsets.pop(run_id, None)
+
+
 class DemoValidationModel(ModelPort):
-    """Deterministic model that requests both validation tools every Run."""
+    """Validate parallel tools, with an explicit feedback-driven cycle scenario."""
 
     def __init__(self) -> None:
         self._batch = 0
@@ -172,16 +309,35 @@ class DemoValidationModel(ModelPort):
             if isinstance(message, ToolResultMessage)
         )
         usage = ModelUsage(input_tokens=12, output_tokens=8, total_tokens=20)
-        if not results:
+        task = next(
+            (
+                m.content
+                for m in reversed(request.messages)
+                if isinstance(m, UserMessage)
+            ),
+            "",
+        )
+        cycle_demo = task.startswith("Demonstrate trajectory recovery.")
+        parallel_requested = any(
+            isinstance(message, AssistantMessage) and len(message.tool_calls) == 2
+            for message in current_messages
+        )
+        confirmed = any(
+            isinstance(message, TransientInstruction)
+            and message.source == "trajectory:cycle_confirmed"
+            for message in current_messages
+        )
+        if not results or (cycle_demo and not parallel_requested):
             self._batch += 1
             batch = self._batch
+            calls: tuple[ToolCall, ...] = (
+                ToolCall(f"demo-{batch}-a", "parallel_probe_a"),
+                ToolCall(f"demo-{batch}-b", "parallel_probe_b"),
+            )
+            if cycle_demo and not confirmed:
+                calls = (calls[len(results) % 2],)
             yield ModelResponseCompleted(
-                AssistantMessage(
-                    tool_calls=(
-                        ToolCall(f"demo-{batch}-a", "parallel_probe_a"),
-                        ToolCall(f"demo-{batch}-b", "parallel_probe_b"),
-                    )
-                ),
+                AssistantMessage(tool_calls=calls),
                 usage,
             )
             return
@@ -190,9 +346,12 @@ class DemoValidationModel(ModelPort):
             message.content
             for message in current_messages
             if isinstance(message, TransientInstruction)
+            and not message.source.startswith("trajectory:")
         )
         labels = ", ".join(message.tool_name for message in results)
         text = f"Parallel validation completed with {labels}."
+        if cycle_demo:
+            text += " Changed to a parallel batch after confirmed-cycle feedback."
         if steering:
             text += f" Applied steering: {' | '.join(steering)}"
         yield ModelTextDelta(text)
@@ -287,6 +446,8 @@ class StreamlitRuntimeController:
         self._controls: list[ControlReceipt] = []
         self._last_error: str | None = None
         self._startup_error: BaseException | None = None
+        self._trajectory_updates: list[TrajectoryUpdate] = []
+        self._trajectory_pipeline: _InspectableTrajectoryPipeline | None = None
         self._thread = threading.Thread(
             target=self._thread_main,
             name=f"ejagent-{config.agent_id}",
@@ -377,10 +538,40 @@ class StreamlitRuntimeController:
     async def _initialize(self) -> None:
         recorder = _ProbeRecorder()
         store = JsonlSessionStore(self.config.store_root)
+        monitor = None
+        if self.config.trajectory_enabled:
+            buffer = TrajectoryContextBuffer()
+            evaluator = _ProbeCheckpointEvaluator(recorder)
+            pipeline = _InspectableTrajectoryPipeline(buffer)
+            self._trajectory_pipeline = pipeline
+
+            def publish(update: TrajectoryUpdate) -> None:
+                if update.signal.trigger is CheckpointTrigger.BASELINE:
+                    self._trajectory_updates.clear()
+                    pipeline.deliveries.clear()
+                self._trajectory_updates.append(update)
+                buffer.publish(
+                    update.to_context_frame(
+                        goal=PROBE_GOAL,
+                        next_turn=update.signal.turn + 1,
+                    )
+                )
+
+            def close_run(
+                run_id: str, _checkpoints: tuple[TrajectoryCheckpoint, ...]
+            ) -> None:
+                buffer.close_run(run_id)
+                evaluator.close_run(run_id)
+
+            monitor = OnlineTrajectoryMonitor(
+                evaluator, update_sink=publish, run_close_sink=close_run
+            )
         harness = AgentHarness(
             agent_id=self.config.agent_id,
             model=self._model_factory(),
             tools=_validation_tools(recorder, self.config.probe_delay_seconds),
+            trajectory=monitor,
+            context=self._trajectory_pipeline,
             initial_messages=(
                 SystemMessage(
                     "You are validating EJAgent. When asked to verify parallel tools, "
@@ -389,7 +580,11 @@ class StreamlitRuntimeController:
             ),
             store=store,
             limits=self.config.limits,
-            configuration_revision="streamlit-example-v1",
+            configuration_revision=(
+                "streamlit-example-v2-trajectory"
+                if self.config.trajectory_enabled
+                else "streamlit-example-v2"
+            ),
         )
         await harness.start()
         self._recorder = recorder
@@ -455,6 +650,12 @@ class StreamlitRuntimeController:
             controls=tuple(self._controls),
             probes=recorder.snapshot(),
             last_error=self._last_error,
+            trajectory_updates=tuple(self._trajectory_updates),
+            trajectory_contexts=(
+                tuple(self._trajectory_pipeline.deliveries)
+                if self._trajectory_pipeline is not None
+                else ()
+            ),
         )
 
     async def _shutdown(self) -> None:
