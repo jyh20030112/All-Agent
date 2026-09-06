@@ -1,9 +1,14 @@
 # Trajectory Failure Scenarios
 
+This specification records the scenarios used to develop the Harness's
+trajectory evaluation. Its pre-implementation assumptions describe the original
+experiment baseline. Current capabilities are documented in
+[Harness trajectory integration](trajectory-runtime-readiness.md).
+
 ## Status
 
 This is a pre-implementation experiment specification. Its purpose is to make
-trajectory failures reproducible before EJAgent introduces new runtime policy,
+trajectory failures reproducible before EJAgent introduces new Harness policy,
 state, progress, or context contracts.
 
 The first experiment deliberately targets a failure that the current
@@ -20,7 +25,7 @@ The frozen execution contract for FS-001 is defined in
 
 The experiments answer four questions in order:
 
-1. Can the current Runtime enter a repeatable, solvable non-progress cycle?
+1. Can the baseline Kernel enter a repeatable, solvable non-progress cycle?
 2. Which observations are necessary to distinguish the failure from healthy
    repeated work?
 3. Which environment facts remain authoritative at each checkpoint?
@@ -142,7 +147,7 @@ guard.
 ### Deterministic policy replay
 
 A controlled ModelPort emits the intended alternating decisions. This mode
-must be deterministic and proves that the Runtime and its existing controls
+must be deterministic and proves that the Kernel and its existing controls
 permit the pathological trajectory.
 
 It does not prove that a production model is likely to choose the trajectory.
@@ -241,7 +246,7 @@ cannot represent healthy repetition.
 
 1. Freeze the fixture, requirements, verifiers, and baseline State.
 2. Capture one successful Action C trajectory to prove solvability.
-3. Capture deterministic A/B replay to prove runtime permissiveness.
+3. Capture deterministic A/B replay to prove Kernel permissiveness.
 4. Capture HC-001 through HC-004.
 5. Run live-model trials without changing prompts between outcomes.
 6. Compare which Facts separate the failing and healthy trajectories.

@@ -1,11 +1,13 @@
-# Trajectory Context Projection
+# Harness Trajectory Context Feedback
 
 ## Status
 
-Phase 2 provides an internal, opt-in Context projection under
-`ejagent._trajectory`. It is not exported from the public package, is disabled
-unless a host explicitly supplies a `TrajectoryContextPipeline`, and gives no
-trajectory code authority to admit Actions or terminate Runs.
+The Harness supports internal, opt-in trajectory Context projection under
+`ejagent._trajectory`. A host composes `AgentHarness` with a monitor and
+`TrajectoryContextPipeline` to provide decision-specific feedback. The
+projection is not a stable top-level API and gives no trajectory code authority
+to admit Actions or terminate Runs. The Streamlit example enables this
+composition by default; the library does not.
 
 The entry gates are executable in
 [`phase2_evidence.py`](../experiments/trajectory/phase2_evidence.py), with the
@@ -101,9 +103,9 @@ turn 2 is absent from turn 1 and visible exactly once on turn 2.
 | False-positive review | productive wait, exploration, legitimate retry, and regress-then-recover all remain `no_cycle` |
 | Completion Audit Run semantics | [ADR 0001](adr/0001-failed-completion-audit-continues-run.md) chooses same-Run feedback while budget remains |
 
-## Current non-goals
+## Current projection boundaries
 
-- no default or public Context pipeline;
+- no default-on trajectory pipeline in the library or stable top-level export;
 - no universal Fact collector or durable Fact store;
 - no default-on capture or enforcement inside `RuntimeKernel`;
 - no domain-independent Completion verifier; the host evaluator supplies its
@@ -112,11 +114,19 @@ turn 2 is absent from turn 1 and visible exactly once on turn 2.
 - no projection of detector thresholds, fingerprints, stale values, or the full
   trajectory log.
 
-The host still owns Fact capture and event production. Phase 2 establishes the
-model-facing seam and its invariants without claiming those domain-specific
-responsibilities for Core.
+The host owns domain Fact capture and evaluation. `OnlineTrajectoryMonitor`
+generates events from those evaluations and analysis; the host connects its
+update sink to the Context source. The projection is a Harness feedback
+capability whose correctness depends on these domain inputs.
 
 The internal capture/event/context seam has passed the
-[Runtime-readiness gates](trajectory-runtime-readiness.md) and is now wired into
+[Harness integration gates](trajectory-runtime-readiness.md) and is now wired into
 `RuntimeKernel` when a host explicitly supplies a monitor. This does not enable
 enforcement by itself.
+
+`TrajectoryContextBuffer` keys frames by Run and turn. Reads do not consume a
+frame, so rebuilding Context for the same turn returns the same staged input;
+`close_run()` removes its frames. Terminal completion advice may be staged for
+a next turn that never occurs, because the current Kernel does not enforce
+completion review. Applications should distinguish assessments from instructions
+actually included in a model Context, as the Streamlit example does.

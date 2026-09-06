@@ -1,7 +1,39 @@
-# EJAgent Runtime
+# EJAgent Harness
 
-This context defines the language used to reason about an agent's execution,
-its environment, and whether its trajectory is making verifiable progress.
+This context defines the language of an Agent Harness: the environment that
+supports an agent's pursuit of a Goal through Context, Actions, State,
+evaluation, control, and continuity across Runs.
+
+## Harness language
+
+**Harness**:
+The surrounding system that coordinates an Actor's access to Context, Tools,
+State, Evidence, and control while preserving continuity across Runs.
+_Avoid_: Model-tool loop, agent runtime
+
+**Kernel**:
+The execution component within a Harness that carries out one Run under its
+supplied Context, capabilities, controls, and limits.
+_Avoid_: Harness, whole agent
+
+**Host**:
+The application that supplies a Harness with domain-specific capabilities,
+environment access, and the criteria used to evaluate a Goal.
+_Avoid_: Actor, model provider
+
+**Run**:
+One bounded attempt to act from an accepted starting State toward a task or
+continuation, ending with an outcome and a record of what happened.
+_Avoid_: Session, Goal, turn
+
+**Conversation**:
+The accepted message history available to subsequent Runs of a logical agent.
+_Avoid_: Complete trajectory, current environment truth
+
+**Audit**:
+The record of execution and control decisions, including failed or cancelled
+work whose messages need not become Conversation.
+_Avoid_: Conversation, model Context
 
 ## Objective and decision language
 
@@ -111,7 +143,7 @@ compared or evaluated.
 _Avoid_: Turn, arbitrary timestamp
 
 **Checkpoint Trigger**:
-A semantic Runtime boundary that requires a fresh Checkpoint, such as Run
+A semantic execution boundary that requires a fresh Checkpoint, such as Run
 baseline, completed Action batch, verification, external change, or Completion
 Claim.
 _Avoid_: Every Audit event, timer tick

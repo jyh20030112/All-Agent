@@ -1,14 +1,15 @@
-# EJAgent Core 类、配置与运行链路
+# EJAgent Harness 类、配置与执行链路
 
-本文面向需要维护、扩展或嵌入 EJAgent Core 的开发者。它描述当前代码的真实行为，
+本文面向需要维护、扩展或嵌入 EJAgent Harness 的开发者。它描述当前代码的真实行为，
 而不是未来路线图。规范性约束仍以
 [`runtime-kernel-harness-design.md`](runtime-kernel-harness-design.md) 和类型定义为准。
 需要从安装开始逐项使用功能时，请阅读[全功能使用指南](usage-guide.md)。
+项目定位与职责全貌见 [Harness 概览](harness-overview.md)。
 
 ## 1. 先建立整体心智模型
 
-EJAgent Core 只管理一个逻辑 Agent。`RuntimeKernel` 负责一次 Run，
-`AgentHarness` 负责跨 Run 生命周期和持久状态：
+EJAgent 是围绕 Agent 决策组织状态、上下文、工具、控制和评估的 Harness。当前每个
+`AgentHarness` 实例管理一个逻辑 Agent；`RuntimeKernel` 是其中执行单次 Run 的内核：
 
 ```text
 AgentHarness（长期存在）
@@ -18,6 +19,8 @@ AgentHarness（长期存在）
 ├── ModelPort（Provider 适配）
 ├── ToolExecutor（工具发现与执行）
 ├── RunObserver（提交后的旁路观察）
+├── TrajectoryMonitor（可选检查点采集与评估）
+│   └── 宿主 evaluator → Assessment → 下一次 Context
 └── RuntimeKernel（一次 Run）
     └── _RunWorkspace（仅本次 Run 可变）
 ```
@@ -28,7 +31,7 @@ AgentHarness（长期存在）
 | --- | --- | --- |
 | `Conversation` | 下一次 Run 可继续使用的类型化消息 | 是 |
 | `Audit` | 成功、失败、取消和外部副作用的事实记录 | 是 |
-| `ContextView` | 某次模型请求的摘要、Skills、steering 等投影 | 否 |
+| `ContextView` | 某次模型请求的摘要、Skills、Steering、轨迹反馈等投影 | 否 |
 
 因此，摘要不会改写 Conversation，失败 Run 的过程仍可进入 Audit，而未提交的消息
 不会污染后续对话。
@@ -88,12 +91,17 @@ async with harness:
     只追加 Audit。
 15. Store 决定完成后，Harness 异步通知 observers。observer 的延迟或失败不改变结果。
 
+启用 `trajectory` 后，Kernel 还会在第一个 Context 前、完整工具批次写入工作区后、
+接受文本完成回复前采集检查点。宿主 evaluator 提供当前事实和需求／约束判断，分析器
+产生进度及循环评估；连接投影管道后，反馈可进入下一次模型 Context。当前完成建议只
+进入 Audit，不会强制继续 Run。见[轨迹集成](trajectory-runtime-readiness.md)。
+
 如果持久化失败，Harness 会把结果改写为 `PERSISTENCE_FAILED`，并保持内存 revision
 不变。此时 Store 没有可靠写入，因此 persistence failure 本身只能由返回值和 observer
 看到，不能声称已经 durable。Provider、Context 或 Tool 的协议错误属于实现缺陷，会
 抛异常；预期的运行错误则进入结构化 `RunFailure`。
 
-## 4. `AgentHarness`：生命周期与状态所有者
+## 4. `AgentHarness`：应用入口、生命周期与状态所有者
 
 ### 构造参数
 
@@ -103,6 +111,7 @@ async with harness:
 | `model` | 一个 `ModelPort` adapter。 |
 | `tools` | 一个 `ToolExecutor`；无工具时传空的 `FunctionToolExecutor()`。 |
 | `context` | 可选 `ContextPipeline`；省略时 Kernel 使用 identity 投影。 |
+| `trajectory` | 可选 `TrajectoryMonitor`；仅传入监控器不会自动注入模型反馈，还需连接 Context 管道。 |
 | `initial_messages` | Store 没有已有快照时的初始 Conversation，通常放 system prompt。 |
 | `store` | 省略时只保留 Harness 内的临时状态；持久化使用 `JsonlSessionStore`。 |
 | `observers` | Store 决策后异步接收 `RunAudit`，不能参与提交。 |
@@ -160,8 +169,8 @@ monotonic_clock=None)` 没有 Session 和资源生命周期。它只接受 `RunS
 Conversation；Audit 中的完成事件保留真实完成顺序。
 
 当前也没有可注入的 `RunPolicy` 类；预算、终止和提交资格分别固化在
-`RuntimeKernel` 与 `SessionCommit` 中。项目不支持真正的 mid-Run 暂停/恢复，也不
-包含多 Agent 管理。
+`RuntimeKernel` 与 `SessionCommit` 中。当前实现尚未提供真正的 mid-Run 暂停/恢复
+或多 Agent 协调。
 
 ## 6. 消息与 JSON 类
 
@@ -175,7 +184,7 @@ Conversation；Audit 中的完成事件保留真实完成顺序。
 | `ToolCall` | `id`、工具名和不可变 JSON 参数。 |
 | `ToolResultMessage` | 与 call ID 配对的结果，可标记 `is_error`。 |
 | `ContextSummary` | 派生摘要，只允许出现在 ContextView。 |
-| `TransientInstruction` | steering、Skills 等 Run-local 指令，不提交。 |
+| `TransientInstruction` | Steering、Skills、轨迹反馈等 Run-local 指令，不提交。 |
 
 `ConversationMessage` 是 `SystemMessage`、`UserMessage`、`AssistantMessage` 和
 `ToolResultMessage` 的闭合联合；`ContextMessage` 额外包含摘要和临时指令。
@@ -206,6 +215,7 @@ Context、Model、Tool、Control、Commit 等哪个阶段。部分 `StopReason` 
 `model_thinking_delta`、`assistant_message`、`tool_started`、
 `tool_completed`、`turn_completed` 和 `run_finished`。Harness 还可能追加
 `steering_discarded` 或 `commit_failed`。
+启用轨迹监控时还会出现 `trajectory_checkpointed` 或 `trajectory_capture_failed`。
 
 ## 8. Model seam 与 Provider adapters
 

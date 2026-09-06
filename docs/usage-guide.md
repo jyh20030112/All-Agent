@@ -1,7 +1,8 @@
-# EJAgent Core 全功能使用指南
+# EJAgent Harness 使用指南
 
-本文按实际使用场景介绍 EJAgent Core 的全部现有功能。类的职责、数据所有权和内部
-调用链请配合阅读[类、配置与运行链路](core-classes-and-runtime-flow.md)。
+本文介绍如何通过 `AgentHarness` 组合上下文、工具、状态、控制与轨迹反馈。
+项目定位见 [Harness 概览](harness-overview.md)；类的职责、数据所有权和内部调用链
+见[类、配置与执行链路](core-classes-and-runtime-flow.md)。发行包名仍为 `ejagent-core`。
 
 ## 1. 安装与环境
 
@@ -614,9 +615,37 @@ harness = AgentHarness(
 
 资源按声明顺序启动、反序关闭；启动中途失败会回滚已启动资源。
 
-## 14. 直接调用 RuntimeKernel
+## 14. 轨迹评估与上下文反馈
 
-高级嵌入场景可以绕过 Harness：
+`AgentHarness(trajectory=monitor, context=pipeline, ...)` 可以把在线监控和模型反馈
+接入同一个 Harness。`TrajectoryMonitor` 是 `ejagent.kernel` 中的协议；内置的
+`OnlineTrajectoryMonitor`、`CheckpointEvaluator` 和 `TrajectoryContextPipeline`
+仍位于内部包 `ejagent._trajectory`，尚未作为稳定顶层 API 发布。
+
+应用需要提供 evaluator，从实际环境采集事实、验证需求和约束。监控器在检查点计算
+进度与循环判断；通过 `update_sink` 将结果发布到 `TrajectoryContextBuffer`，再由
+`TrajectoryContextPipeline` 在指定 Run、指定轮次追加临时反馈。只配置监控器时会有
+审计回执，但不会自动增加模型上下文。Run 结束时，应通过关闭回调释放暂存帧和宿主状态。
+
+仓库中的交互示例提供完整接线：
+
+```bash
+uv sync --locked --all-extras --group dev
+uv run streamlit run examples/streamlit_app.py
+```
+
+应用默认开启 **Trajectory feedback**。选择 Demo 模式，在 **Controls** 点击
+**Run parallel validation** 查看正常进度，或点击 **Run trajectory recovery** 观察
+串行重复如何在循环反馈后转为并发。恢复演示至少需要 8 轮和 160 个 Demo Token。
+**Trajectory** 页签展示检查点和实际加入模型 Context 的临时指令。
+
+该示例仅验证本次 Run 中 A 完成、B 完成及 A/B 重叠三个需求，不能替代其他应用的
+任务评估。完成审核建议也不等于执行控制：`completion_allowed=False` 目前不会让
+Kernel 自动拒绝结束或再执行一轮。详细边界见[轨迹集成](trajectory-runtime-readiness.md)。
+
+## 15. 高级嵌入：直接使用执行内核
+
+已有应用自行承担 Harness 职责时，可以直接使用 `RuntimeKernel` 执行单个 Run：
 
 ```python
 import asyncio
@@ -653,7 +682,7 @@ asyncio.run(main())
 Kernel 不启动资源、不读取或写入 Store，也不会提交 `outcome.delta`。调用方必须自行
 负责生命周期、并发串行化、CAS 和恢复。绝大多数应用不应使用这条路径。
 
-## 15. 自定义 Adapter
+## 16. 自定义 Adapter
 
 所有 seam 都是结构化 Protocol，不要求继承基类：
 
@@ -665,17 +694,19 @@ Kernel 不启动资源、不读取或写入 Store，也不会提交 `outcome.del
 - `AuditReader`：可选的 Audit 查询能力。
 - `RunObserver`：提交后的旁路观察。
 - `ManagedResource`：由 Harness 管理 start/shutdown。
+- `TrajectoryMonitor`：通过 Kernel 定义的边界观察执行；宿主负责领域评估与反馈接线。
 
 预期运行失败应使用对应的 `ModelCallError`、`ToolExecutionError`、
 `ContextBuildError` 或 `SessionStoreError`。返回错误类型、缺失终止事件等实现 bug 应
 使用或触发 `*ProtocolError`，不要伪装成普通业务失败。
 
-## 16. 当前限制和易错点
+## 17. 当前实现边界和易错点
 
 - 一个 `AgentHarness` 只代表一个逻辑 Agent，不管理多 Agent。
 - 不支持真正暂停并序列化一个正在执行的 Run；`continue_run()` 是新 Run。
 - 多个 Run 会被 Harness 串行化；同一模型响应中的 tool calls 始终并发执行。
 - `RunPolicy` 尚未成为可注入实现；限制和终止逻辑目前在 Kernel 内。
+- 轨迹评估和 Context 反馈已可接入；依据评估自动拒绝动作、强制重新规划和拦截完成尚未实现。
 - Harness 会消费 Provider streaming，但当前只把 delta 写入 Audit，不向 `run()` 调用方
   实时推送。调用方只能在 Run 完成后读取 outcome。
 - `DerivedCompactionPipeline` 只生成派生视图，不减少 durable journal 大小。
@@ -683,11 +714,11 @@ Kernel 不启动资源、不读取或写入 Store，也不会提交 `outcome.del
 - MCP 单个 service 失败会被跳过；不要把“Harness 成功启动”等同于“所有 MCP 服务
   都可用”。
 
-## 17. 验证
+## 18. 验证
 
 ```bash
-uv run ruff check src tests benchmarks
-uv run ruff format --check src tests benchmarks
+uv run ruff check src tests examples benchmarks
+uv run ruff format --check src tests examples benchmarks
 uv run mypy
 uv run python -m unittest discover -s tests -p 'test*.py' -q
 uv build

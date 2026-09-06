@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/ejagent-mascot.svg" width="180" alt="从蛋中孵化的 EJAgent 吉祥物">
   <h1>EJAgent Core</h1>
-  <p><em>孵化属于你的 Agent —— 高度可定制、可持久、可控制的 Python 运行时。</em></p>
+  <p><em>孵化属于你的 Agent —— 围绕上下文、工具、状态、控制与证据反馈构建的 Python Agent Harness。</em></p>
   <p>
     <a href="https://github.com/jyh20030112/EJAgent/stargazers"><img src="https://img.shields.io/github/stars/jyh20030112/EJAgent" alt="GitHub Stars"></a>
     <a href="https://pypi.org/project/ejagent-core/"><img src="https://img.shields.io/pypi/v/ejagent-core" alt="PyPI 版本"></a>
@@ -17,12 +17,12 @@
 
 ---
 
-EJAgent Core 是一个轻量级 Python Agent 运行时，可用于构建能够调用工具、保持对话
-状态、在进程重启后恢复并接受实时控制的 Agent。模型、工具、上下文策略、存储和
-可观察性都可以独立替换，让运行时适应你的应用，而不是让应用迁就框架。
+EJAgent Core 是一个 Python **Agent Harness**，围绕 Agent 的决策组织上下文、工具、
+状态、控制与评估。它支持 Agent 跨任务保留工作状态、从已提交记录恢复、接受用户干预，
+并在选择下一步行动时使用经过验证的环境反馈。
 
-它可以作为智能助手、工作流 Agent、编程工具、研究 Agent，以及任何需要可靠
-模型—工具循环的应用基础。
+它可以用于构建智能助手、编程 Agent、研究 Agent 和面向具体任务的应用。模型 Provider、
+工具能力、上下文策略、存储和评估器可以按应用领域组合。
 
 ## 可以用它做什么
 
@@ -33,24 +33,27 @@ EJAgent Core 是一个轻量级 Python Agent 运行时，可用于构建能够�
 - **可持久恢复的 Agent**：将 Session 写入追加式 Journal，进程重启后可以恢复。
 - **能够使用工具的 Agent**：接入 Python 函数、组合多个工具执行器，或通过统一接口
   连接 MCP 服务。
-- **可控的运行时**：取消当前任务、干预下一次模型调用、排队后续任务，并限制 turn
+- **可控的 Agent**：取消当前任务、干预下一次模型调用、排队后续任务，并限制 turn
   数或 token 用量。
 - **上下文感知的 Agent**：注入本地 Skill、为长对话生成摘要，或者实现自己的上下文
   策略。
 - **可观察的系统**：记录结构化结果、故障、token 用量、模型事件和工具活动，同时让
   观察逻辑与执行过程解耦。
+- **具备轨迹反馈的 Agent**：接入宿主评估器，判断需求满足情况、约束和重复的状态／
+  动作模式，再将相关反馈加入下一次模型上下文。
 - **不绑定 Provider 的应用**：使用 OpenAI-compatible Endpoint、Anthropic，或为其他
   模型 API 实现适配器。
 
 ## 为什么选择 EJAgent Core
 
-做出一个 Agent Demo 很容易，让 Agent 随着应用增长仍然保持可预测则更困难。
-EJAgent Core 为执行、状态、工具和外部副作用提供清晰边界，同时足够轻量，可以直接
-嵌入现有服务、CLI、Worker 或桌面应用。
+Harness 负责组织模型能看到什么、能执行什么、哪些状态跨任务保留，以及执行证据如何
+影响后续决策。EJAgent 将已接受的 Conversation、执行 Audit 和临时模型 Context 分开，
+让反馈和摘要可以更新，同时保持已提交历史的完整性。
 
-项目以两个职责集中的组件为核心：`RuntimeKernel` 执行一次模型—工具 Run，
-`AgentHarness` 在多次 Run 之间提供持久状态、资源生命周期、运行控制和原子提交。
-这些设计细节不会侵入应用代码，但每个集成边界都可以替换。
+`AgentHarness` 是应用入口，拥有生命周期、已接受状态、控制和提交协调职责。
+`RuntimeKernel` 是其中执行单次 Run 的内核；上下文管道、工具、Provider 和可选轨迹
+评估共同组成 Harness 的能力。项目职责与当前实现边界见
+[Agent Harness 概览](docs/harness-overview.md)。
 
 ## 安装
 
@@ -115,10 +118,10 @@ harness = AgentHarness(
 )
 ```
 
-## Streamlit 验证应用
+## 在 Streamlit 中体验 Harness
 
-仓库提供一个用于验证 Harness 运行时的交互式应用。确定性 Demo 模式不需要凭据，
-也可以切换到前文配置的 OpenAI-compatible Endpoint
+仓库提供一个用于体验 Harness 行为的交互式应用。确定性 Demo 模式不需要凭据，
+也可以切换到前文配置的 OpenAI-compatible Endpoint。
 
 ```bash
 uv sync --locked --extra streamlit
@@ -127,7 +130,18 @@ uv run streamlit run examples/streamlit_app.py
 
 页面可以检查 JSONL 恢复、工具并行耗时、取消、Steering、FIFO Follow-up、Run
 限制、Revision、Usage 和持久化 Audit。点击 **Start** 时会锁定本次运行配置；如需
-修改，请先停止 Runtime。
+修改，请先停止当前会话。
+
+应用默认开启 **Trajectory feedback**，可以在启动前关闭。宿主评估器根据本次 Run
+的真实工具记录检查三个需求：A 完成、B 完成、已完成的 A/B 执行时间存在重叠。
+这个覆盖率只衡量探针验证，不评价任意聊天任务。**Trajectory** 页签展示检查点进度、
+循环判断、完成建议，以及实际加入模型上下文的临时指令。详细信息仅保留当前应用会话
+的最近一次 Run；重启后，持久化 Audit 中仍保留轨迹采集回执。
+
+选择 Demo 模式，点击 **Controls → Run trajectory recovery**，可以复现反馈过程：
+模型先交替串行调用探针，分析器确认循环后，模型根据上下文反馈改为同时调用两个探针。
+请至少允许 8 轮和 160 个 Demo Token。原有并发验证仍可使用；真实 Provider 模式也接入
+同一套评估器和上下文管道。完成建议仍属于观察结果，审核失败不会强制 Kernel 继续执行。
 
 ## 每个边界都可以定制
 
@@ -139,9 +153,11 @@ uv run streamlit run examples/streamlit_app.py
 | 长历史摘要方式       | `ContextCompactor` |
 | Session 持久化       | `SessionStore`     |
 | 日志、追踪或指标     | `RunObserver`      |
+| 在线轨迹观察         | `ejagent.kernel` 中的 `TrajectoryMonitor` |
 
-这些接口保持精简并且不绑定 Provider。只需实现应用真正需要的部分，再与内置运行时
-组合即可。
+这些接口保持精简并且不绑定 Provider，通过 `AgentHarness` 组合应用需要的能力。
+内置在线监控器、评估器接口和轨迹上下文适配器目前位于内部包 `ejagent._trajectory`，
+尚未成为稳定的顶层 API。
 
 ## 内置能力
 
@@ -154,17 +170,21 @@ uv run streamlit run examples/streamlit_app.py
 - 协作式取消、实时 Steering 和 FIFO Follow-up
 - 结构化 Audit 与统一的 token 用量统计
 - 基于 Revision、支持幂等和跨进程文件锁的 Session 提交
+- 可选的在线轨迹评估与面向下一次决策的上下文反馈
 
-EJAgent Core 专注于单个逻辑 Agent。应用可以在它的外层按需构建多 Agent 编排和
-任意时刻暂停/恢复能力。
+当前每个 `AgentHarness` 管理一个逻辑 Agent，尚未实现多 Agent 协调和任意时刻的
+mid-Run 暂停／恢复。依据轨迹自动拒绝动作、强制重新规划和完成审核拦截仍属于后续策略
+工作；当前评估用于模型反馈和 Audit，不覆盖既有终止决策。
 
 ## 文档
 
+- [Agent Harness 概览](docs/harness-overview.md)：项目定位、职责、反馈链路和当前能力。
 - [全功能使用指南](docs/usage-guide.md)：安装、配置和全部内置能力的使用方式。
-- [Core 类与运行链路](docs/core-classes-and-runtime-flow.md)：内部模型与完整 Run
+- [Harness 类与执行链路](docs/core-classes-and-runtime-flow.md)：内部模型与完整 Run
   生命周期。
-- [Kernel–Harness 设计](docs/runtime-kernel-harness-design.md)：规范性的架构边界与
+- [Agent Harness 架构](docs/runtime-kernel-harness-design.md)：规范性的架构边界与
   不变量。
+- [轨迹集成](docs/trajectory-runtime-readiness.md)：在线观察、上下文反馈和执行策略边界。
 
 ## 开发
 

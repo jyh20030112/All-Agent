@@ -1,14 +1,20 @@
 # Trajectory Pre-implementation Experiment Report
 
+This is the historical report for the 2026-09-01 experiment phase. References
+to the baseline Kernel and unchanged production code describe that experiment,
+not the current Harness. See [current integration](trajectory-runtime-readiness.md)
+for online capture and Context feedback, and the [Harness overview](harness-overview.md)
+for project scope.
+
 ## Outcome
 
 The pre-implementation experiments reproduced a solvable non-progress cycle in
-the current Runtime, preserved all four healthy controls, validated the
+the baseline Kernel, preserved all four healthy controls, validated the
 proposed context-event timing, and completed nine pre-registered live-model
-trials. No production Runtime or contract code was changed.
+trials. No production Kernel or contract code was changed.
 
 The central result is deliberately narrower than “models loop”: the current
-Runtime permits a period-two environment-State cycle that its consecutive
+Kernel permits a period-two environment-State cycle that its consecutive
 equal-Tool-call guard cannot recognize. A deterministic policy reproduced that
 failure. The sampled live model solved FS-001 in all nine trials and therefore
 did not estimate a non-zero natural incidence for this fixture.
@@ -43,7 +49,7 @@ All eight local gates passed:
 | Baseline is S0 = `(R1 fail, R2 pass, C1 pass)` | pass |
 | Gold solution reaches S2 from S0 | pass |
 | Gold solution reaches S2 from S1 | pass |
-| Current Runtime permits deterministic A/B recurrence | pass |
+| Baseline Kernel permits deterministic A/B recurrence | pass |
 | HC-001 through HC-004 remain healthy | pass |
 | Event-context timing follows the frozen policy | pass |
 | Full oracle separates failure from all controls | pass |
@@ -57,7 +63,7 @@ CP0 S0 -A-> CP1 S1 -B-> CP2 S0 -A-> CP3 S1 -B-> CP4 S0
 
 The paired States had equal fingerprints and equal underlying Facts, no new
 Evidence appeared after the first cycle, Requirement coverage remained at
-`1/2`, and Action cost continued to increase. The Runtime Audit shows that the
+`1/2`, and Action cost continued to increase. The Kernel Audit shows that the
 existing repeat guard did not stop the alternating calls.
 
 ### A falsified measurement assumption
@@ -236,7 +242,7 @@ nor the configured base URL appears in it.
 
 ## Observation-only implementation follow-up
 
-The first Shadow Mode implementation now exists without changing Runtime
+The first Shadow Mode implementation now exists without changing Kernel
 behavior. Its internal Interface, invariants, and next-phase entry criteria are
 documented in [Trajectory Shadow Analysis](trajectory-shadow-design.md).
 

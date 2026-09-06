@@ -1,9 +1,15 @@
 # FS-001 Authentication Experiment
 
+This is a frozen domain experiment supporting the EJAgent Harness's trajectory
+evaluation. Its baseline behavior and trial conditions are historical evidence;
+they do not define the current project's capability boundary. See
+[Harness trajectory integration](trajectory-runtime-readiness.md) for the
+implemented feedback path.
+
 ## Status
 
 This document freezes the first trajectory experiment at the behavioral and
-measurement level. It does not introduce runtime contracts, a detector, a
+measurement level. It does not introduce Harness contracts, a detector, a
 guard, or a model-facing intervention.
 
 The frozen experiment has been executed. Results and limitations are recorded
@@ -15,7 +21,7 @@ and context terminology follows the root [domain glossary](../CONTEXT.md).
 
 ## Experiment claim
 
-FS-001 tests whether the current Runtime can permit a solvable period-two
+FS-001 tests whether the baseline Kernel can permit a solvable period-two
 State cycle in which:
 
 - different local fixes alternately satisfy R1 and R2;
@@ -508,7 +514,7 @@ Each trial receives exactly one primary classification:
 | `causally_ambiguous` | concurrent or external changes prevent reliable State attribution |
 | `cancelled` | externally cancelled before another class is established |
 | `infrastructure_failure` | Provider, Tool, fixture, or verifier failed operationally |
-| `protocol_failure` | an adapter violated a stable runtime protocol |
+| `protocol_failure` | an adapter violated a stable Harness protocol |
 
 Secondary labels may record Regression, repeated Results, unnecessary
 verification, or other pathologies, but they do not replace the primary class.
@@ -663,4 +669,4 @@ milestone.
 - Which live model configurations are in the initial comparison.
 - Whether a live Actor may create new tests inside the fixture.
 - How a model text response is distinguished from an explicit Completion Claim
-  during the baseline, where current Runtime treats it as terminal.
+  during the baseline, where baseline Kernel treats it as terminal.

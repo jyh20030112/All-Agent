@@ -1,11 +1,12 @@
-# Runtime Kernel and Agent Harness Design
+# Agent Harness Architecture
 
 ## Status
 
-This document defines the implemented pre-1.0 EJAgent Core architecture and is
-normative for its contracts. The former stateful agent loop, dictionary-message
-runtime, Handler/Middleware stack, and event-driven Session writer have been
-removed.
+EJAgent is an Agent Harness. This document defines the implemented pre-1.0
+architecture and is normative for its contracts. The
+[Harness overview](harness-overview.md) describes the project scope; the
+[domain glossary](../CONTEXT.md) defines the shared terms. `RuntimeKernel` is
+the existing name of the single-Run execution component within the Harness.
 
 Implementation progress:
 
@@ -38,43 +39,59 @@ Implementation progress:
   blocks, streamed tool input, and cache-aware usage from the Anthropic
   Messages protocol. Both Provider adapters pass the same Kernel-facing stream
   contract without adding Provider concepts to Core.
-- `ejagent` now exports only the new composition surface. Legacy execution and
-  commit packages are absent from built artifacts. Migration stages 1–8 are
-  complete.
+- An optional `TrajectoryMonitor` captures execution boundaries. The internal
+  online implementation combines host evaluation with progress and cycle
+  assessment; a composed Context pipeline can expose feedback to the next
+  model decision. Completion advice is recorded without enforcing continuation.
 
 ## Scope
 
-EJAgent Core contains two layers for one logical agent:
+The Harness coordinates Context, capabilities, control, continuity, and
+evaluation for an agent. The current `AgentHarness` instance owns one logical
+agent and delegates single-Run execution to its Kernel:
 
 ```text
 AgentHarness
   ├─ long-lived conversation state
   ├─ resource and control lifecycle
   ├─ context projection
+  ├─ model and tool capabilities
+  ├─ optional environment evaluation and trajectory feedback
   ├─ durable commit coordination
   └─ RuntimeKernel
-       └─ one deterministic model-tool Run
+       └─ one Run with deterministic message ordering
 ```
 
-Multi-agent management and arbitrary mid-Run pause/resume are out of scope.
+Multi-agent management and arbitrary mid-Run pause/resume are not implemented.
 The supported controls are cancellation, steering at model-call safe points,
 queued follow-ups, and continuation from a committed revision.
 
 ## Ownership Boundaries
 
-### RuntimeKernel
+### Kernel: single-Run execution
 
-The Kernel owns only Run-local state: turn counters, usage, repeat guards,
+`RuntimeKernel` owns only Run-local state: turn counters, usage, repeat guards,
 cancellation, the private message workspace, and temporary context. It receives
 an immutable `RunSpec` and returns a `RunOutcome`. It never starts resources,
 persists Sessions, or mutates Harness state.
 
-### AgentHarness
+### Harness: lifecycle, accepted state, and composition
 
 The Harness owns conversation revisions, the last committed result, Provider
 and Tool resource lifecycle, control queues, context policy, and SessionStore
-commit coordination. Each Run receives a snapshot of the current revision.
-Configuration changes take effect only on the next Run.
+commit coordination. Each Run receives a snapshot of the current revision;
+per-Run limits and metadata are captured when that Run is admitted. The
+configured Context and trajectory dependencies participate in execution
+through their own interfaces.
+
+### Host evaluator: domain truth
+
+The host supplies environment access and Requirement/Constraint evaluation.
+The Kernel identifies when a Tool batch has completed; the evaluator determines
+what that batch changed in the application's domain. The trajectory analyzer
+derives Assessments, and the Context adapter selects model-visible feedback.
+This composition is a Harness capability even though each part has a separate
+implementation and ownership boundary.
 
 ## Data Domains
 
@@ -111,20 +128,28 @@ correctness boundary: the Harness cannot report a committed completion until
 the Store accepts the idempotent commit. Observer failures never substitute for
 Store failures and do not alter execution.
 
-Failed and cancelled Runs remain auditable but do not advance active
-Conversation history by default. A Harness policy may explicitly promote an
-eligible Delta.
+Only `RunStatus.COMPLETED` advances Conversation in the current
+`SessionCommit` implementation. Failed, rejected, and cancelled Runs remain
+auditable without promoting their Delta. There is no injectable commit policy
+that changes this rule. A Conversation rollback does not undo Tool side effects.
 
 ## Extension Boundaries
 
-New extension points are limited to narrow, ordered protocols:
+Current extension points are:
 
 1. `ModelPort` normalizes Provider requests and streams.
-2. `ContextPipeline` contributes, transforms, and serializes ContextViews.
-3. `ToolRuntime` validates, authorizes, schedules, and executes Tools.
-4. `RunPolicy` decides budgets, retries, termination, and commit eligibility.
-5. `RunObserver` observes events without changing Run results.
+2. `ContextPipeline` builds ContextViews; `ContextCompactor` derives summaries.
+3. `ToolExecutor` exposes Tool definitions and executes calls. The Kernel
+   coordinates concurrent batches; domain authorization belongs to the adapter.
+4. `TrajectoryMonitor` in `ejagent.kernel` observes semantic execution boundaries.
+   The built-in evaluator and projection types remain internal to `_trajectory`.
+5. `RunObserver` receives completed Run audits after the Store decision.
 6. `SessionStore` commits revisions and durable Run records.
+7. `ManagedResource` exposes lifecycle managed by the Harness.
+
+`RunLimits` supplies turn, token, and repeated-call bounds. Budget and
+termination behavior is implemented in the Kernel, and commit eligibility in
+`SessionCommit`; no injectable `RunPolicy` or `ToolRuntime` interface exists.
 
 Resources are started transactionally by the Harness and shut down in reverse
 order. Kernel and Tool dispatch methods require ready dependencies.
@@ -152,22 +177,20 @@ a compatibility execution path. Public contracts are intentionally small;
 workspace mechanics, schedulers, commit coordinators, and state-machine phases
 remain internal.
 
-The initial refactor remains in one distribution. Module dependency direction
+The Harness remains in one distribution. Module dependency direction
 is enforced before considering separate Provider or backend packages.
 
-## Migration Strategy
+## Feedback and Control Evolution
 
-1. Add typed message and Run contracts with contract tests.
-2. Implement the Kernel over a private workspace and deterministic Delta.
-3. Implement the Harness, resource lifecycle, controls, and atomic commit.
-4. Split Conversation, Audit, and ContextView; make compaction derived.
-5. Add locked, append-only JSONL Session persistence.
-6. Adapt OpenAI, MCP, Skills, and documentation.
-7. Replace the public API and delete the old execution path.
-8. Validate `ModelPort` with a second, materially different Provider protocol.
+State continuity, Context composition, capabilities, and existing controls are
+implemented parts of the Harness. Online trajectory feedback adds evidence to
+the decision cycle while preserving these ownership boundaries.
 
-Intermediate steps may coexist on a development branch, but no release should
-expose two competing execution or commit semantics.
+The Kernel currently accepts a terminal text response even if the monitor
+returns `completion_allowed=False`. ADR 0001 records the intended same-Run
+feedback behavior for a future completion-enforcement policy; it is not enabled
+by composing the monitor today. Automatic denial, forced replanning, and a
+general domain verifier are likewise not current capabilities.
 
 ## Acceptance Criteria
 
@@ -180,3 +203,6 @@ expose two competing execution or commit semantics.
 - Tool execution timing may vary, but Delta order remains deterministic.
 - ModelPort and SessionStore implementations pass shared contract suites.
 - Kernel modules do not import concrete Providers, Stores, MCP, or Skills.
+- The Kernel observes trajectory through its protocol without importing the
+  internal analyzer; model-visible feedback passes through Context.
+- Domain evaluation, analysis, and control authority remain distinguishable.

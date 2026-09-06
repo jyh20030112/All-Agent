@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/ejagent-mascot.svg" width="180" alt="EJAgent mascot hatching from an egg">
   <h1>EJAgent Core</h1>
-  <p><em>Hatch an agent of your own — a highly customizable Python runtime for reliable AI agents.</em></p>
+  <p><em>Hatch an agent of your own — a Python Agent Harness for context, tools, state, control, and evidence-driven feedback.</em></p>
   <p>
     <a href="https://github.com/jyh20030112/EJAgent/stargazers"><img src="https://img.shields.io/github/stars/jyh20030112/EJAgent" alt="GitHub stars"></a>
     <a href="https://pypi.org/project/ejagent-core/"><img src="https://img.shields.io/pypi/v/ejagent-core" alt="PyPI version"></a>
@@ -17,14 +17,15 @@
 
 ---
 
-EJAgent Core is a lightweight Python runtime for creating agents that can use
-tools, retain conversation state, recover after restarts, and accept live
-control. Its model, tools, context strategy, storage, and observability are all
-replaceable, so you can adapt the runtime to your application instead of
-adapting your application to a framework.
+EJAgent Core is a Python **Agent Harness** that brings together context,
+tools, state, control, and evaluation around an agent's decisions. It helps an
+agent carry work across tasks, recover committed state after restarts, accept
+user intervention, and use verified environment feedback when choosing its
+next action.
 
-Use it as the foundation for assistants, workflow agents, coding tools,
-research agents, or any application that needs a reliable model–tool loop
+Use it to build assistants, coding agents, research agents, and task-oriented
+applications. Model providers, capabilities, context strategies, storage, and
+evaluators can be composed for the application's domain.
 
 ## What You Can Build
 
@@ -36,26 +37,30 @@ research agents, or any application that needs a reliable model–tool loop
   them after a process restart.
 - **Tool-using agents** — expose Python functions, compose multiple tool
   executors, or connect MCP services through one consistent interface.
-- **Controllable runtimes** — cancel active work, steer the next model step,
+- **Controllable agents** — cancel active work, steer the next model step,
   queue follow-up tasks, and enforce turn or token limits.
 - **Context-aware agents** — inject local Skills, derive summaries for long
   conversations, or implement your own context policy.
 - **Observable systems** — capture structured results, failures, token usage,
   model events, and tool activity without coupling observers to execution.
+- **Agents with trajectory feedback** — connect a host evaluator to assess
+  Requirement satisfaction, Constraints, and repeated State/Action patterns,
+  then project relevant feedback into the next model Context.
 - **Provider-flexible applications** — use OpenAI-compatible endpoints,
   Anthropic, or implement a provider adapter for another model API.
 
 ## Why EJAgent Core
 
-Agent demos are easy; agents that remain predictable as an application grows
-are harder. EJAgent Core provides explicit boundaries for execution, state,
-tools, and side effects while staying small enough to embed in an existing
-service, CLI, worker, or desktop application.
+A useful Harness manages what the model can see and do, what persists between
+tasks, and how execution evidence informs later decisions. EJAgent keeps
+accepted Conversation, execution Audit, and temporary model Context separate,
+so feedback and summaries can evolve without rewriting committed history.
 
-At its center are two focused components: `RuntimeKernel` executes one
-model–tool Run, while `AgentHarness` adds durable state, resource lifecycle,
-runtime control, and atomic commits across Runs. The detailed design stays out
-of your application code, but every integration boundary remains replaceable.
+`AgentHarness` is the application entry point and owns lifecycle, accepted
+state, controls, and commit coordination. Its `RuntimeKernel` executes one Run;
+Context pipelines, tools, providers, and optional trajectory evaluation supply
+the surrounding capabilities. See the [Harness overview](docs/harness-overview.md)
+for responsibilities and current implementation boundaries.
 
 ## Install
 
@@ -120,9 +125,9 @@ harness = AgentHarness(
 )
 ```
 
-## Streamlit Validation App
+## Explore the Harness in Streamlit
 
-The repository includes one interactive validation app for the Harness runtime.
+The repository includes an interactive app for exploring Harness behavior.
 It runs without credentials in deterministic demo mode, or against the
 OpenAI-compatible endpoint configured above.
 
@@ -133,8 +138,24 @@ uv run streamlit run examples/streamlit_app.py
 
 Use the app to inspect JSONL recovery, concurrent Tool timing, cancellation,
 Steering, FIFO Follow-ups, Run limits, revisions, usage, and durable Audit
-records. Runtime settings are captured when you click **Start**; stop the
-runtime before changing them.
+records. Harness settings are captured when you click **Start**; stop the
+session before changing them.
+
+**Trajectory feedback** is enabled by default in this app and can be disabled
+before starting. The host evaluator checks three requirements from actual probe
+records for each Run: A completes, B completes, and a completed A/B pair overlaps.
+It does not grade arbitrary chat tasks. The **Trajectory** tab shows checkpoint
+progress, cycle assessments, completion advice, and the transient instructions
+included in model contexts. Detailed views cover the latest Run in the current
+session; only trajectory receipts remain in durable Audit after restarting.
+
+For a deterministic feedback demonstration, choose demo mode and click
+**Controls → Run trajectory recovery**. The model alternates single probes until
+the analyzer confirms a cycle, then responds to that Context by requesting both
+probes together. Allow at least eight turns and 160 demo tokens. Ordinary parallel
+validation remains available, and the same evaluator and Context wiring apply to
+the real Provider mode. Completion advice remains observational; the Kernel does
+not force continuation when completion verification fails.
 
 ## Customize Every Boundary
 
@@ -146,9 +167,12 @@ runtime before changing them.
 | Long-history summarization       | `ContextCompactor` |
 | Session persistence              | `SessionStore`     |
 | Logging, tracing, or metrics     | `RunObserver`      |
+| Online trajectory observation   | `TrajectoryMonitor` in `ejagent.kernel` |
 
 These are narrow, provider-neutral contracts. Implement only the part your
-application needs, then compose it with the built-in runtime.
+application needs, then compose it through `AgentHarness`. The built-in online
+monitor, evaluator interface, and trajectory Context adapter currently live in
+the internal `ejagent._trajectory` package; they are not stable top-level APIs.
 
 ## Built-in Capabilities
 
@@ -161,19 +185,25 @@ application needs, then compose it with the built-in runtime.
 - Cooperative cancellation, live steering, and FIFO follow-ups
 - Structured audit records and normalized usage accounting
 - Revision-based, idempotent session commits with cross-process file locking
+- Optional online trajectory assessment and decision-specific Context feedback
 
-EJAgent Core intentionally focuses on one logical agent. Multi-agent
-orchestration and arbitrary mid-Run pause/resume can be built around it when an
-application needs them.
+Each `AgentHarness` currently manages one logical agent. Multi-agent coordination
+and arbitrary mid-Run pause/resume are not implemented. Trajectory-based Action
+denial, forced replanning, and completion enforcement remain policy work; current
+assessments inform the model and Audit without overriding terminal decisions.
 
 ## Documentation
 
+- [Agent Harness Overview](docs/harness-overview.md) — project scope,
+  responsibilities, feedback flow, and current capabilities.
 - [Full Usage Guide](docs/usage-guide.md) — installation, configuration, and
   recipes for every built-in capability.
-- [Core Classes and Runtime Flow](docs/core-classes-and-runtime-flow.md) — the
+- [Harness Classes and Execution Flow](docs/core-classes-and-runtime-flow.md) — the
   internal model and complete Run lifecycle.
-- [Kernel–Harness Design](docs/runtime-kernel-harness-design.md) — normative
+- [Agent Harness Architecture](docs/runtime-kernel-harness-design.md) — normative
   architectural boundaries and invariants.
+- [Trajectory Integration](docs/trajectory-runtime-readiness.md) — online
+  observation, Context feedback, and enforcement boundaries.
 
 ## Development
 

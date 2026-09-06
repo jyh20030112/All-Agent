@@ -1,10 +1,12 @@
-# Trajectory Runtime Integration Readiness
+# Harness Trajectory Integration and Readiness
 
 ## Decision
 
-The first formal, opt-in `RuntimeKernel` integration is implemented. Blocking
-enforcement remains disabled: trajectory output is observable advice, not Run
-control authority.
+Online trajectory observation and Context feedback are implemented Harness
+capabilities. `AgentHarness` accepts an optional monitor, its `RuntimeKernel`
+supplies the execution boundaries, and the host composes evaluation with
+Context projection. Blocking enforcement remains disabled: trajectory output
+is advice rather than Run control authority.
 
 The executable gate is
 [`runtime_readiness.py`](../experiments/trajectory/runtime_readiness.py). Its
@@ -16,7 +18,7 @@ All 23 gates pass.
 
 ## What is now implemented
 
-`TrajectoryMonitor` in `ejagent.kernel.trajectory` is the stable Runtime-facing
+`TrajectoryMonitor` in `ejagent.kernel.trajectory` is the stable Kernel-facing
 seam; `OnlineTrajectoryMonitor` is its internal implementation. It:
 
 - serializes capture independently for each Run;
@@ -36,9 +38,12 @@ repository.
 
 ## Checkpoint policy
 
-Only these semantic boundaries call the evaluator:
+The observation protocol supports these semantic boundaries. The Kernel emits
+baseline, Tool-batch completion, and text-completion signals automatically when
+a monitor is supplied; verification and external-change signals require host
+integration.
 
-| Trigger | Runtime position | Causal rule |
+| Trigger | Execution or host boundary | Causal rule |
 | --- | --- | --- |
 | `baseline` | after Run-local initialization, before turn 1 Context | no Actor Actions; turn 0 |
 | `tool_batch_completed` | after the full concurrent batch has completed and all results have entered the workspace in proposal order | one named batch containing every proposed Action |
@@ -49,7 +54,7 @@ Only these semantic boundaries call the evaluator:
 Audit deltas, streamed tokens, arbitrary timestamps, and individual members of
 a concurrent Tool batch are not Checkpoint boundaries.
 
-## Implemented Runtime wiring
+## Harness composition and Kernel wiring
 
 The wiring is opt-in and preserves current behavior when no monitor is
 supplied. It has four insertion points in `RuntimeKernel.run`:
@@ -67,7 +72,7 @@ supplied. It has four insertion points in `RuntimeKernel.run`:
    protocol-exception path. A later enforcement change may use a failed
    Completion Audit to continue the same Run, as recorded in ADR 0001.
 
-The Runtime signal's cumulative cost comes from the existing usage accumulator,
+The Kernel signal's cumulative cost comes from the existing usage accumulator,
 the count of model-proposed Actions, and a monotonic Run-local clock. Causal
 Action signatures contain the Tool name and a canonical-argument SHA-256
 digest, not raw arguments. The Context pipeline remains the only model-facing seam: a
@@ -77,8 +82,21 @@ host composes the monitor's update sink with `TrajectoryContextBuffer` and
 Capture success produces a `trajectory_checkpointed` Audit record. Capture
 failure produces `trajectory_capture_failed`, disables later captures in the
 same Run, and leaves the existing Run result unchanged. The monitor is closed
-from `finally`, including when a Runtime protocol error escapes. See
+from `finally`, including when a Kernel protocol error escapes. See
 [ADR 0002](adr/0002-runtime-owns-trajectory-observation-boundary.md).
+
+The [Streamlit Harness example](../examples/streamlit_runtime.py) composes a
+probe evaluator, monitor, buffer, and Context pipeline. Feedback is enabled by
+default in that example, while the library remains opt-in. It assesses recorded
+probe completion and overlap, exposes checkpoints and built Context
+instructions, and cleans up Run-local evaluation and buffer state. Its recovery
+demo changes the scripted Actor's actions in response to a confirmed-cycle
+instruction; the monitor does not directly command Tool execution.
+
+Monitor capture failures are isolated as described above. Context projection
+has its own validation: incomplete or stale Facts can raise
+`ContextProtocolError`. Enabling observation alone does not enable feedback,
+and observation's failure isolation does not override Context error semantics.
 
 ## Automated evidence
 
@@ -92,8 +110,8 @@ The readiness gate proves:
 - every declared trigger is captured in order;
 - concurrent causal ambiguity fails closed;
 - external change requires explicit Fact invalidation;
-- failed Completion Audit produces same-Run continuation Context, while a
-  fully verified Completion may proceed;
+- failed Completion Audit can produce a same-Run continuation instruction;
+  the Kernel still accepts a terminal text response in this integration;
 - events are staged only for their next Decision Boundary;
 - prior Phase-2 failure and healthy-control gates remain green;
 - `RuntimeKernel` and stable `ejagent.contracts` do not import the internal

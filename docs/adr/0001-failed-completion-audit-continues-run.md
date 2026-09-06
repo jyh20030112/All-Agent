@@ -4,6 +4,11 @@ status: accepted
 
 # A failed Completion Audit continues the current Run
 
+Implementation status: this is the accepted target for Harness completion
+policy. Evaluation and continuation instructions exist, but the current Kernel
+records `completion_allowed` without enforcing it and still accepts terminal
+text responses. See [current integration](../trajectory-runtime-readiness.md).
+
 A Completion Claim is not terminal until every Goal Requirement and Constraint
 has scope-appropriate Evidence. When that audit fails and the Run still has
 budget, the evaluator's unmet items and missing Evidence are projected at the

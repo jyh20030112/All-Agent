@@ -1,10 +1,14 @@
 # Environment Facts and Event-Context Exposure
 
+This document develops the information boundaries for the EJAgent Harness.
+Use the [Harness overview](harness-overview.md) for current project scope and
+[trajectory integration](trajectory-runtime-readiness.md) for implemented wiring.
+
 ## Status
 
 This is an exploratory information-boundary specification. It defines what
-must be recorded, evaluated, and potentially shown to a model before any
-trajectory controller or runtime guard is implemented.
+must be recorded, evaluated, and potentially shown to a model when designing
+trajectory feedback and future enforcement policies.
 
 Event names and payloads in this document are conceptual. They are not current
 public EJAgent contracts.
@@ -18,7 +22,7 @@ names remain internal and are not stable public contracts.
 
 ## Purpose
 
-An agent runtime needs two different views of execution:
+An Agent Harness needs two different views of execution:
 
 - a complete, lossless-enough trajectory for audit and evaluation;
 - a bounded, decision-relevant Context projection for the next model call.
@@ -112,7 +116,7 @@ Four consumers need different projections:
 | --- | --- |
 | Trajectory recorder | Ordered Actions, Observations, Facts, States, costs, and decisions |
 | Evaluator | Goal, Requirements, Constraints, comparable States, and scoped Evidence |
-| Runtime controller | Proposed Action, current State, recent Assessments, budgets, and policy history |
+| Kernel controller | Proposed Action, current State, recent Assessments, budgets, and policy history |
 | Model | Stable objective plus the smallest current evidence needed for the next decision |
 
 An after-commit Observer may consume durable Audit, but it cannot govern the
@@ -216,7 +220,7 @@ Progress must cite Evidence or its evaluator source.
 
 ### 6. Intervention
 
-Only when runtime policy intervenes:
+Only when Harness policy intervenes:
 
 - what was denied or detected;
 - which checkpoints and Facts support the decision;
@@ -299,7 +303,7 @@ project to adding all concepts to the Core public API.
 
 ## First observation-only study
 
-Before runtime enforcement, the study should:
+Before Harness enforcement, the study should:
 
 1. replay RunAudit into normalized Action and Observation records;
 2. attach experiment-owned environment checkpoints to those records;

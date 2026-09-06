@@ -2,10 +2,13 @@
 
 ## Status
 
-The first observation-only implementation is present under
-`ejagent._trajectory`. It is intentionally internal, is not re-exported by the
-top-level package, and does not change Runtime execution, completion, Context,
-or Tool admission.
+Trajectory assessment is an internal Harness capability under
+`ejagent._trajectory`. The analyzer provides pure online assessment and
+post-Run reports; by itself it changes neither execution nor Context. The
+online monitor and Context adapter compose these assessments into feedback,
+as described in [Harness trajectory integration](trajectory-runtime-readiness.md).
+The package is not re-exported by the top-level API and has no enforcement
+authority over Tool admission or Run completion.
 
 The implementation follows the terminology in [the domain glossary](../CONTEXT.md)
 and the evidence established by the
@@ -48,7 +51,7 @@ The module returns one immutable `TrajectoryReport` containing:
 Fact capture, persistence, model prompting, and Action admission are hidden
 from neither the caller nor the module: they are explicitly outside this
 Interface. This prevents the Analyzer from inventing environment truth or
-acquiring Runtime control authority.
+acquiring Kernel control authority.
 
 ## Existing seam
 
@@ -56,7 +59,7 @@ acquiring Runtime control authority.
 seam:
 
 ```text
-Runtime finishes
+Kernel finishes
   -> Store commit decision
   -> immutable RunAudit
   -> ShadowTrajectoryObserver
@@ -144,21 +147,23 @@ experiment adapter. They cover:
 - replay of all nine pre-registered live trial Audits.
 
 The same suite also crosses `assess(checkpoints)` directly and proves that its
-cycle result agrees with the terminal report, so Runtime integration does not
+cycle result agrees with the terminal report, so Kernel integration does not
 need to manufacture a partial `RunAudit`.
 
-## Current non-goals
+## Analyzer boundaries
 
 - no additions to stable `ejagent.contracts`;
 - no top-level public export;
-- no default-on Runtime hook or Context projection;
+- no implicit observation or Context wiring in the library; applications
+  explicitly compose the monitor and projection;
 - no Completion Audit enforcement;
-- no Action denial, replan, cancellation, or Run termination;
+- no direct Action denial, forced replanning, cancellation, or Run termination;
+  a Context adapter can ask the Actor to replan;
 - no universal State Fingerprint or Fact persistence schema.
 
-## Entry criteria for the next phase
+## Historical Phase-2 entry criteria
 
-An opt-in model-facing Context projection should not be implemented until:
+The initial study required the following evidence before Context projection:
 
 1. Shadow reports have been collected across more than the single FS-001
    domain.
@@ -171,8 +176,9 @@ An opt-in model-facing Context projection should not be implemented until:
 5. The project decides whether a failed Completion Audit continues the current
    Run or starts a new Run.
 
-Until those criteria are met, `TrajectoryReport` is measurement output rather
-than Controller policy.
+These criteria were evaluated in Phase 2 below. Passing them enabled feedback
+composition; `TrajectoryReport` remains assessment output rather than an
+execution policy.
 
 ## Phase-2 resolution
 
@@ -188,11 +194,11 @@ The resulting opt-in model-facing module is specified in
 reports remain measurement output; the new Context adapter consumes a separate
 host-owned frame and does not give the after-commit Observer in-Run authority.
 
-## Runtime-readiness resolution
+## Online integration
 
 `OnlineTrajectoryMonitor` serializes Checkpoint capture per Run, delegates
 fresh truth to a host `CheckpointEvaluator`, assesses the result immediately,
 maps it to a Context event, and exposes explicit lifecycle cleanup. The first
-opt-in Kernel wiring now crosses a stable, Runtime-owned observation seam; the
+opt-in Kernel wiring now crosses a stable, Kernel-owned observation seam; the
 readiness evidence and implemented insertion points are documented in
 [`trajectory-runtime-readiness.md`](trajectory-runtime-readiness.md).
